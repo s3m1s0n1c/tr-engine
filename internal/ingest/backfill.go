@@ -201,11 +201,11 @@ func (bm *BackfillManager) loop() {
 		job := bm.queue[0]
 		bm.queue = bm.queue[1:]
 		jobCtx, cancel := context.WithCancel(bm.ctx)
+		job.StartedAt = time.Now()
 		bm.active = job
 		bm.cancelFn = cancel
 		bm.mu.Unlock()
 
-		job.StartedAt = time.Now()
 		bm.log.Info().Int("job_id", job.ID).Int("total", job.Total).Msg("backfill job starting")
 
 		bm.processJob(jobCtx, job)
@@ -216,11 +216,15 @@ func (bm *BackfillManager) loop() {
 		bm.cancelFn = nil
 		bm.mu.Unlock()
 
+		msg := "backfill job finished"
+		if jobCtx.Err() != nil {
+			msg = "backfill job cancelled"
+		}
 		bm.log.Info().
 			Int("job_id", job.ID).
 			Int64("completed", job.Completed.Load()).
 			Int64("failed", job.Failed.Load()).
-			Msg("backfill job finished")
+			Msg(msg)
 	}
 }
 
@@ -277,18 +281,19 @@ func (bm *BackfillManager) processJob(ctx context.Context, job *BackfillJob) {
 
 // waitForQueueRoom blocks until the transcription queue has <= 1 pending jobs.
 func (bm *BackfillManager) waitForQueueRoom(ctx context.Context) {
+	if bm.transcriber.Stats().Pending <= 1 {
+		return
+	}
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
 	for {
-		if ctx.Err() != nil {
-			return
-		}
-		stats := bm.transcriber.Stats()
-		if stats.Pending <= 1 {
-			return
-		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(500 * time.Millisecond):
+		case <-ticker.C:
+			if bm.transcriber.Stats().Pending <= 1 {
+				return
+			}
 		}
 	}
 }

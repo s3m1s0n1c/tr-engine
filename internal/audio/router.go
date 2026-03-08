@@ -180,12 +180,13 @@ func (r *AudioRouter) processChunk(chunk AudioChunk) {
 
 	// Build and publish frame.
 	frame := AudioFrame{
-		SystemID: systemID,
-		TGID:     chunk.TGID,
-		UnitID:   chunk.UnitID,
-		Seq:      seq,
-		Format:   format,
-		Data:     data,
+		SystemID:   systemID,
+		TGID:       chunk.TGID,
+		UnitID:     chunk.UnitID,
+		SampleRate: enc.SampleRate(),
+		Seq:        seq,
+		Format:     format,
+		Data:       data,
 	}
 
 	r.bus.Publish(frame)

@@ -307,7 +307,7 @@ Add the simplestream plugin to your trunk-recorder `config.json`:
         {
           "address": "YOUR_TR_ENGINE_HOST",
           "port": 9123,
-          "talkgroup": 0,
+          "TGID": 0,
           "sendJSON": true,
           "shortName": ""
         }

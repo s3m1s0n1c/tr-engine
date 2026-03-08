@@ -347,6 +347,18 @@
     background: var(--success);
     animation: pulse 1.5s infinite;
   }
+  .listen-toggle.resume-hint {
+    border-color: var(--warning, #f0a020);
+    color: var(--warning, #f0a020);
+    animation: resume-pulse 1.2s ease-in-out infinite;
+  }
+  .listen-toggle.resume-hint .dot {
+    background: var(--warning, #f0a020);
+  }
+  @keyframes resume-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
 
   /* ── Audio Controls ── */
   .audio-controls {
@@ -1879,7 +1891,15 @@ setInterval(function() {
 
   let engine = null;
   let listening = false;
-  const selectedTGs = new Set(); // selected TGs play audio (inverted from old muted model)
+  const selectedTGs = new Set(); // stores "sysId:tgid" composite keys; selected TGs play audio
+  var _pendingLegacyTgids = null; // plain tgid strings awaiting migration to composite keys
+  // Helper: check if any system's version of a tgid is selected
+  function isTGSelected(tgid) {
+    for (var key of selectedTGs) {
+      if (key === tgid || String(key).split(':')[1] === String(tgid)) return true;
+    }
+    return false;
+  }
 
   // Settings drawer refs
   const settingsOverlay = document.getElementById('settings-overlay');
@@ -1900,7 +1920,14 @@ setInterval(function() {
     try {
       var saved = JSON.parse(localStorage.getItem('omni-settings') || '{}');
       if (saved.volume != null) { masterVol.value = saved.volume; setVolumeEl.value = saved.volume; }
-      if (Array.isArray(saved.selected)) saved.selected.forEach(function(t) { selectedTGs.add(t); });
+      if (Array.isArray(saved.selected)) {
+        saved.selected.forEach(function(t) { selectedTGs.add(t); });
+        // Migrate legacy plain tgid entries to composite keys once systems are known
+        var legacyTgids = saved.selected.filter(function(t) { return String(t).indexOf(':') === -1; });
+        if (legacyTgids.length > 0) {
+          _pendingLegacyTgids = new Set(legacyTgids.map(String));
+        }
+      }
       if (saved.autoPan === false) autoPanToggle.checked = false;
       if (saved.bufferSize) { bufferSizeSelect.value = saved.bufferSize; setBufferSizeEl.value = saved.bufferSize; }
       if (saved.systemFilter) pendingSystemFilter = saved.systemFilter;
@@ -2063,8 +2090,8 @@ setInterval(function() {
     });
 
     engine.on('tg_created', function(ev) {
-      // Selection model: mute everything not in selectedTGs
-      engine.setMute(ev.tgid, !selectedTGs.has(ev.tgid));
+      // Selection model: mute everything not in selectedTGs (composite key)
+      engine.setMute(ev.key, !selectedTGs.has(ev.key));
       // Audio channel rows disabled — SSE call_start handles row creation
       highlightAudioTG(ev.tgid, true);
     });
@@ -2108,8 +2135,16 @@ setInterval(function() {
     if (listening) stopListening(); else startListening();
   });
 
-  // Auto-resume listening if it was active before reload
-  if (pendingListen) startListening();
+  // Don't auto-start audio (browsers block AudioContext without a user gesture).
+  // Instead, prompt the user to click the button to resume.
+  if (pendingListen) {
+    listenToggle.classList.add('resume-hint');
+    listenLabel.textContent = '\u25C0 click to resume';
+    listenToggle.addEventListener('click', function resumeHint() {
+      listenToggle.classList.remove('resume-hint');
+      listenToggle.removeEventListener('click', resumeHint);
+    }, { once: true });
+  }
 
   // ── Volume + pan controls (toolbar) ──
   masterVol.addEventListener('input', function() {
@@ -2145,18 +2180,21 @@ setInterval(function() {
   // ── Expose for buildChannelCells (selection model) ──
   window._omniAudio = {
     isListening: function() { return listening; },
-    isMuted: function(tgid) { return !selectedTGs.has(tgid); },
+    isMuted: function(tgid) { return !isTGSelected(tgid); },
     toggleMute: function(tgid) {
-      if (selectedTGs.has(tgid)) {
-        selectedTGs.delete(tgid);
-        if (engine) engine.setMute(tgid, true);
-      } else {
-        selectedTGs.add(tgid);
-        if (engine) engine.setMute(tgid, false);
+      // Toggle all composite keys matching this tgid
+      var wasSelected = isTGSelected(tgid);
+      for (var pair of tgCache) {
+        var compositeKey = pair[0];
+        if (parseInt(compositeKey.split(':')[1]) === tgid) {
+          if (wasSelected) selectedTGs.delete(compositeKey);
+          else selectedTGs.add(compositeKey);
+          if (engine) engine.setMute(compositeKey, wasSelected);
+        }
       }
       saveSelectedState();
-      // Update speaker icons for all rows with this tgid
       updateSpeakerIcon(tgid);
+      updateTGListChecks();
     }
   };
 
@@ -2281,7 +2319,22 @@ setInterval(function() {
         if (!matchesTgid && !matchesTag) continue;
       }
       if (!bySystem.has(sysId)) bySystem.set(sysId, []);
-      bySystem.get(sysId).push({ tgid: tgid, alpha_tag: meta.alpha_tag || '', group: meta.group || '' });
+      bySystem.get(sysId).push({ sysId: sysId, tgid: tgid, alpha_tag: meta.alpha_tag || '', group: meta.group || '' });
+    }
+
+    // Migrate legacy plain tgid selections to composite keys
+    if (_pendingLegacyTgids && bySystem.size > 0) {
+      bySystem.forEach(function(tgs, sysId) {
+        for (var i = 0; i < tgs.length; i++) {
+          if (_pendingLegacyTgids.has(String(tgs[i].tgid))) {
+            selectedTGs.add(sysId + ':' + tgs[i].tgid);
+          }
+        }
+      });
+      // Remove the old plain entries
+      _pendingLegacyTgids.forEach(function(t) { selectedTGs.delete(t); });
+      _pendingLegacyTgids = null;
+      saveSettings();
     }
 
     // Sort systems and TGs
@@ -2303,11 +2356,13 @@ setInterval(function() {
         var tg = tgs[t];
         var item = document.createElement('div');
         item.className = 'tg-item';
+        var compositeKey = tg.sysId + ':' + tg.tgid;
         item.dataset.tgid = String(tg.tgid);
+        item.dataset.key = compositeKey;
 
         var cb = document.createElement('input');
         cb.type = 'checkbox';
-        cb.checked = selectedTGs.has(tg.tgid);
+        cb.checked = selectedTGs.has(compositeKey);
         item.appendChild(cb);
 
         var tgidSpan = document.createElement('span');
@@ -2320,28 +2375,26 @@ setInterval(function() {
         tagSpan.textContent = tg.alpha_tag || '\u2014';
         item.appendChild(tagSpan);
 
-        // Click handler (closure for tgid)
-        (function(tgid, checkbox) {
+        // Click handler (closure for composite key + plain tgid)
+        (function(key, tgid, checkbox) {
           item.addEventListener('click', function(e) {
             if (e.target === checkbox) {
-              // Checkbox clicked directly — use its new state
-              if (checkbox.checked) selectedTGs.add(tgid);
-              else selectedTGs.delete(tgid);
+              if (checkbox.checked) selectedTGs.add(key);
+              else selectedTGs.delete(key);
             } else {
-              // Row clicked — toggle
-              if (selectedTGs.has(tgid)) {
-                selectedTGs.delete(tgid);
+              if (selectedTGs.has(key)) {
+                selectedTGs.delete(key);
                 checkbox.checked = false;
               } else {
-                selectedTGs.add(tgid);
+                selectedTGs.add(key);
                 checkbox.checked = true;
               }
             }
-            if (engine) engine.setMute(tgid, !selectedTGs.has(tgid));
+            if (engine) engine.setMute(key, !selectedTGs.has(key));
             saveSelectedState();
             updateSpeakerIcon(tgid);
           });
-        })(tg.tgid, cb);
+        })(compositeKey, tg.tgid, cb);
 
         tgListEl.appendChild(item);
       }
@@ -2360,7 +2413,7 @@ setInterval(function() {
     for (var i = 0; i < rows.length; i++) {
       var spk = rows[i].querySelector('.spk-btn');
       if (spk && parseInt(spk.dataset.tgid) === tgid) {
-        var muted = !selectedTGs.has(tgid);
+        var muted = !isTGSelected(tgid);
         spk.textContent = muted ? '\uD83D\uDD07' : '\uD83D\uDD0A';
         spk.classList.toggle('muted', muted);
       }
@@ -2370,9 +2423,9 @@ setInterval(function() {
   function updateTGListChecks() {
     var items = tgListEl.querySelectorAll('.tg-item');
     for (var i = 0; i < items.length; i++) {
-      var tgid = parseInt(items[i].dataset.tgid);
+      var key = items[i].dataset.key;
       var cb = items[i].querySelector('input[type="checkbox"]');
-      if (cb) cb.checked = selectedTGs.has(tgid);
+      if (cb) cb.checked = selectedTGs.has(key);
     }
   }
 
@@ -2384,9 +2437,8 @@ setInterval(function() {
   // Select All / None
   tgSelectAllBtn.addEventListener('click', function() {
     for (var pair of tgCache) {
-      var tgid = parseInt(pair[0].split(':')[1]);
-      selectedTGs.add(tgid);
-      if (engine) engine.setMute(tgid, false);
+      selectedTGs.add(pair[0]);
+      if (engine) engine.setMute(pair[0], false);
     }
     saveSelectedState();
     renderTGList(tgSearchInput.value.trim());
@@ -2397,7 +2449,8 @@ setInterval(function() {
     selectedTGs.clear();
     for (var i = 0; i < prev.length; i++) {
       if (engine) engine.setMute(prev[i], true);
-      updateSpeakerIcon(prev[i]);
+      var tgid = parseInt(String(prev[i]).split(':').pop());
+      updateSpeakerIcon(tgid);
     }
     saveSelectedState();
     renderTGList(tgSearchInput.value.trim());

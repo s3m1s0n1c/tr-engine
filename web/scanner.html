@@ -665,6 +665,18 @@ body::after {
   background: var(--success);
   animation: pulse 1.5s infinite;
 }
+.live-toggle.resume-hint {
+  border-color: var(--warning, #f0a020);
+  color: var(--warning, #f0a020);
+  animation: resume-pulse 1.2s ease-in-out infinite;
+}
+.live-toggle.resume-hint .dot {
+  background: var(--warning, #f0a020);
+}
+@keyframes resume-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
 
 /* ── Active Streams Panel (live mode now-playing replacement) ── */
 .live-panel {
@@ -2229,6 +2241,7 @@ init();
 
   let engine = null;
   let liveActive = false;
+  let pendingLive = false;
   const liveMutedTGs = new Set();
 
   // Load persisted state
@@ -2236,9 +2249,7 @@ init();
     const saved = JSON.parse(localStorage.getItem('scanner-live') || '{}');
     if (saved.volume != null) liveVol.value = saved.volume;
     if (Array.isArray(saved.muted)) saved.muted.forEach(function(t) { liveMutedTGs.add(t); });
-    if (saved.active === true) {
-      setTimeout(function() { if (!liveActive) toggleLive(); }, 500);
-    }
+    if (saved.active === true) pendingLive = true;
   } catch (e) {}
 
   function saveLiveState() {
@@ -2278,7 +2289,7 @@ init();
 
     engine.on('tg_created', function(ev) {
       if (liveMutedTGs.has(ev.tgid)) {
-        engine.setMute(ev.tgid, true);
+        engine.setMute(ev.key, true);
       }
       renderLiveStreams();
     });
@@ -2335,6 +2346,16 @@ init();
   }
 
   liveToggle.addEventListener('click', toggleLive);
+
+  // Prompt user to click if audio was active before reload
+  if (pendingLive) {
+    liveToggle.classList.add('resume-hint');
+    liveLabel.textContent = '\u25C0 click to resume';
+    liveToggle.addEventListener('click', function resumeHint() {
+      liveToggle.classList.remove('resume-hint');
+      liveToggle.removeEventListener('click', resumeHint);
+    }, { once: true });
+  }
 
   // When SCAN is toggled on, turn off LIVE
   scannerToggle.addEventListener('click', function() {
@@ -2403,19 +2424,19 @@ init();
       badge.appendChild(dot);
       badge.appendChild(document.createTextNode(alpha));
 
-      (function(tgid) {
+      (function(tgid, key) {
         badge.addEventListener('click', function() {
           if (liveMutedTGs.has(tgid)) {
             liveMutedTGs.delete(tgid);
-            engine.setMute(tgid, false);
+            engine.setMute(key, false);
           } else {
             liveMutedTGs.add(tgid);
-            engine.setMute(tgid, true);
+            engine.setMute(key, true);
           }
           saveLiveState();
           renderLiveStreams();
         });
-      })(tg.tgid);
+      })(tg.tgid, tg.key);
 
       liveStreams.appendChild(badge);
     }

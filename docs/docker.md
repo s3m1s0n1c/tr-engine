@@ -307,7 +307,7 @@ Live audio streaming lets browser clients hear radio traffic in real time via th
         {
           "address": "YOUR_DOCKER_HOST",
           "port": 9123,
-          "talkgroup": 0,
+          "TGID": 0,
           "sendJSON": true,
           "shortName": ""
         }
@@ -317,7 +317,7 @@ Live audio streaming lets browser clients hear radio traffic in real time via th
 }
 ```
 
-Set `address` to the IP or hostname of the machine running Docker. Use `talkgroup: 0` for all talkgroups, `shortName: ""` for all systems.
+Set `address` to the IP or hostname of the machine running Docker. Use `TGID: 0` for all talkgroups, `shortName: ""` for all systems.
 
 **tr-engine side:** Add to your `.env`:
 

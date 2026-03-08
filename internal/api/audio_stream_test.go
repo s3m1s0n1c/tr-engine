@@ -91,13 +91,14 @@ func TestAudioStreamSubscribeAndReceive(t *testing.T) {
 
 	// Publish a frame to the bus
 	bus.Publish(audio.AudioFrame{
-		SystemID:  1,
-		TGID:      1001,
-		UnitID:    100,
-		Seq:       1,
-		Timestamp: 1000,
-		Format:    audio.AudioFormatPCM,
-		Data:      []byte{0xDE, 0xAD, 0xBE, 0xEF},
+		SystemID:   1,
+		TGID:       1001,
+		UnitID:     100,
+		SampleRate: 8000,
+		Seq:        1,
+		Timestamp:  1000,
+		Format:     audio.AudioFormatPCM,
+		Data:       []byte{0xDE, 0xAD, 0xBE, 0xEF},
 	})
 
 	// Read the binary message
@@ -111,15 +112,16 @@ func TestAudioStreamSubscribeAndReceive(t *testing.T) {
 		t.Fatalf("message type = %d, want BinaryMessage (%d)", msgType, websocket.BinaryMessage)
 	}
 
-	if len(data) < 12 {
-		t.Fatalf("data length = %d, want >= 12", len(data))
+	if len(data) < 14 {
+		t.Fatalf("data length = %d, want >= 14", len(data))
 	}
 
-	// Parse 12-byte header
+	// Parse 14-byte header
 	systemID := binary.BigEndian.Uint16(data[0:2])
 	tgid := binary.BigEndian.Uint32(data[2:6])
 	// timestamp at bytes 6-9 (skip, it's relative)
 	seq := binary.BigEndian.Uint16(data[10:12])
+	sampleRate := binary.BigEndian.Uint16(data[12:14])
 
 	if systemID != 1 {
 		t.Errorf("system_id = %d, want 1", systemID)
@@ -130,9 +132,12 @@ func TestAudioStreamSubscribeAndReceive(t *testing.T) {
 	if seq != 1 {
 		t.Errorf("seq = %d, want 1", seq)
 	}
+	if sampleRate != 8000 {
+		t.Errorf("sample_rate = %d, want 8000", sampleRate)
+	}
 
 	// Verify audio payload
-	payload := data[12:]
+	payload := data[14:]
 	if len(payload) != 4 {
 		t.Errorf("payload length = %d, want 4", len(payload))
 	}

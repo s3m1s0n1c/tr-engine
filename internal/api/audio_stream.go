@@ -102,8 +102,8 @@ func (h *AudioStreamHandler) HandleStream(w http.ResponseWriter, r *http.Request
 	defer keepalive.Stop()
 
 	var seq uint16
-	// Pre-allocate frame buffer: 12-byte header + max audio data
-	frameBuf := make([]byte, 12+8192)
+	// Pre-allocate frame buffer: 14-byte header + max audio data
+	frameBuf := make([]byte, 14+8192)
 
 	h.log.Info().Str("remote", r.RemoteAddr).Msg("audio stream client connected")
 
@@ -136,18 +136,24 @@ func (h *AudioStreamHandler) HandleStream(w http.ResponseWriter, r *http.Request
 				return
 			}
 
-			// Binary frame format (12-byte header + audio data):
-			// system_id  (uint16 BE) bytes 0-1
-			// tgid       (uint32 BE) bytes 2-5
-			// timestamp  (uint32 BE) bytes 6-9  (ms since connection start)
-			// seq        (uint16 BE) bytes 10-11
-			// audio data            bytes 12+
+			// Binary frame format (14-byte header + audio data):
+			// system_id    (uint16 BE) bytes 0-1
+			// tgid         (uint32 BE) bytes 2-5
+			// timestamp    (uint32 BE) bytes 6-9  (ms since connection start)
+			// seq          (uint16 BE) bytes 10-11
+			// sample_rate  (uint16 BE) bytes 12-13 (Hz, e.g. 8000)
+			// audio data              bytes 14+
 
 			tsMs := uint32(time.Since(connStart).Milliseconds())
 			seq++
 
+			sampleRate := frame.SampleRate
+			if sampleRate == 0 {
+				sampleRate = 8000
+			}
+
 			dataLen := len(frame.Data)
-			totalLen := 12 + dataLen
+			totalLen := 14 + dataLen
 			var buf []byte
 			if totalLen <= len(frameBuf) {
 				buf = frameBuf[:totalLen]
@@ -159,7 +165,8 @@ func (h *AudioStreamHandler) HandleStream(w http.ResponseWriter, r *http.Request
 			binary.BigEndian.PutUint32(buf[2:6], uint32(frame.TGID))
 			binary.BigEndian.PutUint32(buf[6:10], tsMs)
 			binary.BigEndian.PutUint16(buf[10:12], seq)
-			copy(buf[12:], frame.Data)
+			binary.BigEndian.PutUint16(buf[12:14], uint16(sampleRate))
+			copy(buf[14:], frame.Data)
 
 			if err := conn.WriteMessage(websocket.BinaryMessage, buf); err != nil {
 				h.log.Debug().Err(err).Msg("write frame failed")

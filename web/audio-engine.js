@@ -1,6 +1,7 @@
 // Main thread audio coordinator for live radio streaming.
 // Manages WebSocket connection, per-TG audio nodes, mixing, and compression.
 // Usage: const engine = new AudioEngine(); await engine.start(); engine.subscribe({tgids: [1234]});
+// TG keys are composite "systemId:tgid" strings (e.g. "1:9173").
 
 class AudioEngine {
   constructor(wsPath, options) {
@@ -13,7 +14,7 @@ class AudioEngine {
     this.audioCtx = null;
     this.masterGain = null;
     this.masterCompressor = null;
-    this.tgNodes = new Map(); // tgid -> { worklet, gain, compressor, panner, compressorEnabled, muted, lastActivity }
+    this.tgNodes = new Map(); // "systemId:tgid" -> { worklet, gain, compressor, panner, ... }
     this.reconnectDelay = 1000;
     this.lastSubscription = null;
     this.listeners = {};
@@ -45,9 +46,23 @@ class AudioEngine {
     this.audioCtx = new AudioContext({ sampleRate: 48000 });
 
     // Browsers suspend AudioContext until a user gesture triggers resume().
+    // Try immediately (works when start() is called from a click handler).
+    // If that fails (e.g. auto-resume on page load), install a one-time
+    // gesture listener so the first click/tap/keypress anywhere will unstick it.
     if (this.audioCtx.state === 'suspended') {
-      await this.audioCtx.resume();
+      try { await this.audioCtx.resume(); } catch (e) { /* ignore */ }
     }
+    if (this.audioCtx.state === 'suspended') {
+      this._installGestureResume();
+    }
+
+    // Also handle the context getting suspended later (e.g. tab backgrounded on mobile)
+    var self = this;
+    this.audioCtx.addEventListener('statechange', function () {
+      if (self.audioCtx && self.audioCtx.state === 'suspended') {
+        self._installGestureResume();
+      }
+    });
 
     // AudioWorklet requires a secure context (HTTPS or localhost).
     // Fall back to ScriptProcessorNode on insecure origins (plain HTTP).
@@ -83,8 +98,8 @@ class AudioEngine {
       this.ws = null;
     }
     var self = this;
-    this.tgNodes.forEach(function (nodes, tgid) {
-      self._removeTG(tgid);
+    this.tgNodes.forEach(function (nodes, key) {
+      self._removeTG(key);
     });
     this.tgNodes.clear();
     if (this.audioCtx) {
@@ -107,24 +122,25 @@ class AudioEngine {
     }
   }
 
-  setVolume(tgid, value) {
-    var nodes = this.tgNodes.get(tgid);
+  // key: composite "systemId:tgid" string
+  setVolume(key, value) {
+    var nodes = this.tgNodes.get(key);
     if (nodes) nodes.gain.gain.value = value;
-    this._saveSetting('vol_' + tgid, value);
+    this._saveSetting('vol_' + key, value);
   }
 
-  getVolume(tgid) {
-    var nodes = this.tgNodes.get(tgid);
+  getVolume(key) {
+    var nodes = this.tgNodes.get(key);
     return nodes ? nodes.gain.gain.value : 1.0;
   }
 
-  setMute(tgid, muted) {
-    var nodes = this.tgNodes.get(tgid);
+  setMute(key, muted) {
+    var nodes = this.tgNodes.get(key);
     if (nodes) {
       nodes.muted = muted;
-      nodes.gain.gain.value = muted ? 0 : (this._loadSetting('vol_' + tgid) ?? 1.0);
+      nodes.gain.gain.value = muted ? 0 : (this._loadSetting('vol_' + key) ?? 1.0);
       if (!muted && this._autoPan && !nodes._panAssigned) {
-        nodes.panner.pan.value = this._panForTgid(tgid);
+        nodes.panner.pan.value = this._panForKey(key);
         nodes._panAssigned = true;
       }
     }
@@ -146,22 +162,22 @@ class AudioEngine {
     this._saveSetting('master_comp', enabled);
   }
 
-  setTGCompressorEnabled(tgid, enabled) {
-    var nodes = this.tgNodes.get(tgid);
+  setTGCompressorEnabled(key, enabled) {
+    var nodes = this.tgNodes.get(key);
     if (!nodes) return;
     nodes.compressorEnabled = enabled;
     nodes.compressor.ratio.value = enabled ? 3 : 1;
-    this._saveSetting('comp_' + tgid, enabled);
+    this._saveSetting('comp_' + key, enabled);
   }
 
-  setPan(tgid, value) {
-    var nodes = this.tgNodes.get(tgid);
+  setPan(key, value) {
+    var nodes = this.tgNodes.get(key);
     if (nodes && nodes.panner) nodes.panner.pan.value = Math.max(-1, Math.min(1, value));
-    this._saveSetting('pan_' + tgid, value);
+    this._saveSetting('pan_' + key, value);
   }
 
-  getPan(tgid) {
-    var nodes = this.tgNodes.get(tgid);
+  getPan(key) {
+    var nodes = this.tgNodes.get(key);
     return nodes && nodes.panner ? nodes.panner.pan.value : 0;
   }
 
@@ -169,11 +185,10 @@ class AudioEngine {
     this._autoPan = enabled;
     this._saveSetting('auto_pan', enabled);
     if (enabled) {
-      // Assign pan to all unmuted TGs that don't have one yet
       var self = this;
-      this.tgNodes.forEach(function(nodes, tgid) {
+      this.tgNodes.forEach(function(nodes, key) {
         if (!nodes.muted && !nodes._panAssigned) {
-          nodes.panner.pan.value = self._panForTgid(tgid);
+          nodes.panner.pan.value = self._panForKey(key);
           nodes._panAssigned = true;
         }
       });
@@ -184,19 +199,21 @@ class AudioEngine {
     return this._autoPan;
   }
 
-  // Deterministic pan position from tgid — always the same, never moves
-  _panForTgid(tgid) {
-    // Hash tgid to spread across -0.8..0.8
+  // Deterministic pan position from composite key — hash the tgid portion
+  _panForKey(key) {
+    var tgid = parseInt(String(key).split(':').pop()) || 0;
     var h = ((tgid * 2654435761) >>> 0) % 10000;
     return -0.8 + (h / 10000) * 1.6;
   }
 
   getActiveTGs() {
     var result = [];
-    this.tgNodes.forEach(function (nodes, tgid) {
+    this.tgNodes.forEach(function (nodes, key) {
+      var parts = String(key).split(':');
       result.push({
-        tgid: tgid,
-        systemId: nodes.systemId || 0,
+        key: key,
+        tgid: parseInt(parts[1]) || parseInt(parts[0]) || 0,
+        systemId: parts.length > 1 ? parseInt(parts[0]) : (nodes.systemId || 0),
         volume: nodes.gain.gain.value,
         muted: !!nodes.muted,
         compressorEnabled: nodes.compressorEnabled,
@@ -212,6 +229,26 @@ class AudioEngine {
   }
 
   // --- Internal ---
+
+  _installGestureResume() {
+    if (this._gestureResumeInstalled) return;
+    this._gestureResumeInstalled = true;
+    var self = this;
+    var resume = function () {
+      if (self.audioCtx && self.audioCtx.state === 'suspended') {
+        self.audioCtx.resume();
+      }
+      if (!self.audioCtx || self.audioCtx.state !== 'suspended') {
+        document.removeEventListener('click', resume, true);
+        document.removeEventListener('keydown', resume, true);
+        document.removeEventListener('touchstart', resume, true);
+        self._gestureResumeInstalled = false;
+      }
+    };
+    document.addEventListener('click', resume, true);
+    document.addEventListener('keydown', resume, true);
+    document.addEventListener('touchstart', resume, true);
+  }
 
   _connect() {
     var self = this;
@@ -276,46 +313,39 @@ class AudioEngine {
   }
 
   _handleBinaryFrame(buffer) {
-    if (buffer.byteLength < 12) return;
+    if (buffer.byteLength < 14) return;
 
     var view = new DataView(buffer);
     var systemId = view.getUint16(0);
     var tgid = view.getUint32(2);
     // timestamp at offset 6 (4 bytes) - available for latency measurement
     // seq at offset 10 (2 bytes) - available for gap detection
+    var sampleRate = view.getUint16(12) || 8000;
 
-    var audioData = buffer.slice(12);
+    var audioData = buffer.slice(14);
     var audioLen = audioData.byteLength;
+    var key = systemId + ':' + tgid;
 
-    if (!this.tgNodes.has(tgid)) {
-      this._createTG(tgid, systemId);
-    } else {
-      // Update systemId on existing entry (defensive — shouldn't change)
-      var existing = this.tgNodes.get(tgid);
-      if (existing) existing.systemId = systemId;
+    if (!this.tgNodes.has(key)) {
+      this._createTG(key, tgid, systemId);
     }
 
     // Determine format: use server-sent config if available, otherwise auto-detect.
-    // PCM frames must be even-length (int16 pairs) and at least 20 bytes.
-    // Opus frames are typically 10-80 bytes after compression.
-    // Default to PCM for ambiguous small frames to avoid mis-detecting
-    // trailing PCM fragments as Opus (which could corrupt the sample rate).
     var format = this._serverAudioFormat;
     if (!format) {
-      // Only treat as Opus if very small AND odd-length (PCM is always even)
       format = (audioLen < 120 && audioLen % 2 !== 0) ? 'opus' : 'pcm';
     }
 
     if (format === 'pcm' && audioLen >= 2) {
       var pcmData = new Int16Array(audioData);
-      this._feedPCM(tgid, pcmData, 8000);
+      this._feedPCM(key, pcmData, sampleRate);
     } else if (format === 'opus' && audioLen > 0) {
-      this._decodeOpus(tgid, new Uint8Array(audioData));
+      this._decodeOpus(key, new Uint8Array(audioData));
     }
   }
 
-  _feedPCM(tgid, int16Samples, sampleRate) {
-    var nodes = this.tgNodes.get(tgid);
+  _feedPCM(key, int16Samples, sampleRate) {
+    var nodes = this.tgNodes.get(key);
     if (!nodes) return;
     nodes.worklet.port.postMessage({
       type: 'audio',
@@ -325,31 +355,29 @@ class AudioEngine {
     nodes.lastActivity = Date.now();
   }
 
-  async _decodeOpus(tgid, opusData) {
-    var nodes = this.tgNodes.get(tgid);
+  async _decodeOpus(key, opusData) {
+    var nodes = this.tgNodes.get(key);
     if (!nodes) return;
 
     // Lazy-init Opus decoder for this TG
     if (!nodes.opusDecoder) {
       if (typeof AudioDecoder === 'undefined') {
-        // Browser doesn't support WebCodecs (e.g. Firefox) — drop Opus frames
         console.warn('AudioDecoder not available; Opus frames will be dropped');
         return;
       }
 
       try {
         var self = this;
-        var currentTgid = tgid;
+        var currentKey = key;
         nodes.opusDecoder = new AudioDecoder({
           output: function(audioData) {
-            // Convert decoded AudioData to Float32Array, then to Int16
             var float32 = new Float32Array(audioData.numberOfFrames);
             audioData.copyTo(float32, { planeIndex: 0 });
             var int16 = new Int16Array(float32.length);
             for (var i = 0; i < float32.length; i++) {
               int16[i] = Math.max(-32768, Math.min(32767, Math.round(float32[i] * 32768)));
             }
-            self._feedPCM(currentTgid, int16, audioData.sampleRate);
+            self._feedPCM(currentKey, int16, audioData.sampleRate);
             audioData.close();
           },
           error: function(e) {
@@ -379,7 +407,7 @@ class AudioEngine {
     }
   }
 
-  _createTG(tgid, systemId) {
+  _createTG(key, tgid, systemId) {
     var worklet;
     if (this._useWorklet) {
       worklet = new AudioWorkletNode(this.audioCtx, 'radio-audio-processor', {
@@ -399,17 +427,17 @@ class AudioEngine {
     var panner = this.audioCtx.createStereoPanner();
 
     var gain = this.audioCtx.createGain();
-    gain.gain.value = 0; // starts muted; setMute(tgid, false) enables
+    gain.gain.value = 0; // starts muted; setMute(key, false) enables
 
     // Load persisted settings
-    var savedVol = this._loadSetting('vol_' + tgid);
+    var savedVol = this._loadSetting('vol_' + key);
     if (savedVol !== null) gain.gain.value = savedVol;
 
-    var savedComp = this._loadSetting('comp_' + tgid);
+    var savedComp = this._loadSetting('comp_' + key);
     var compEnabled = savedComp === true;
     if (compEnabled) compressor.ratio.value = 3;
 
-    var savedPan = this._loadSetting('pan_' + tgid);
+    var savedPan = this._loadSetting('pan_' + key);
 
     // Chain: worklet -> compressor -> panner -> gain -> masterCompressor
     worklet.connect(compressor);
@@ -417,7 +445,7 @@ class AudioEngine {
     panner.connect(gain);
     gain.connect(this.masterCompressor);
 
-    this.tgNodes.set(tgid, {
+    this.tgNodes.set(key, {
       worklet: worklet,
       compressor: compressor,
       panner: panner,
@@ -425,6 +453,7 @@ class AudioEngine {
       compressorEnabled: compEnabled,
       muted: true,
       lastActivity: Date.now(),
+      tgid: tgid,
       systemId: systemId || 0,
     });
 
@@ -434,17 +463,15 @@ class AudioEngine {
       panner.pan.value = savedPan;
     }
 
-    this.emit('tg_created', { tgid: tgid, systemId: systemId || 0 });
+    this.emit('tg_created', { key: key, tgid: tgid, systemId: systemId || 0 });
   }
 
   // ScriptProcessorNode fallback for insecure contexts (no AudioWorklet).
-  // Returns an object with the same interface as AudioWorkletNode: .port.postMessage(), .connect(), .disconnect()
   _createScriptProcessorShim() {
     var ctx = this.audioCtx;
     var bufferSize = 2048;
     var scriptNode = ctx.createScriptProcessor(bufferSize, 0, 1);
 
-    // Ring buffer (mirrors audio-worklet.js logic)
     var ringBuf = new Float32Array(16384);
     var writePos = 0;
     var readPos = 0;
@@ -520,7 +547,6 @@ class AudioEngine {
       }
     };
 
-    // Shim the AudioWorkletNode interface expected by the rest of the engine
     var active = true;
     scriptNode.port = {
       postMessage: function (msg) {
@@ -535,8 +561,8 @@ class AudioEngine {
     return scriptNode;
   }
 
-  _removeTG(tgid) {
-    var nodes = this.tgNodes.get(tgid);
+  _removeTG(key) {
+    var nodes = this.tgNodes.get(key);
     if (!nodes) return;
     nodes.worklet.port.postMessage({ type: 'stop' });
     nodes.worklet.disconnect();
@@ -546,8 +572,8 @@ class AudioEngine {
     if (nodes.opusDecoder) {
       try { nodes.opusDecoder.close(); } catch (e) { /* ignore */ }
     }
-    this.tgNodes.delete(tgid);
-    this.emit('tg_removed', { tgid: tgid });
+    this.tgNodes.delete(key);
+    this.emit('tg_removed', { key: key, tgid: nodes.tgid, systemId: nodes.systemId });
   }
 
   _saveSetting(key, value) {

@@ -41,13 +41,14 @@ type AudioChunk struct {
 
 // AudioFrame is an encoded audio frame ready for WebSocket delivery.
 type AudioFrame struct {
-	SystemID  int
-	TGID      int
-	UnitID    int
-	Seq       uint16 // per-tgid sequence number
-	Timestamp uint32 // ms since bus start
-	Format    AudioFormat
-	Data      []byte // PCM or Opus payload
+	SystemID   int
+	TGID       int
+	UnitID     int
+	SampleRate int // samples per second (e.g. 8000)
+	Seq        uint16 // per-tgid sequence number
+	Timestamp  uint32 // ms since bus start
+	Format     AudioFormat
+	Data       []byte // PCM or Opus payload
 }
 
 // AudioChunkSource produces audio chunks from a transport (UDP, MQTT, etc.).

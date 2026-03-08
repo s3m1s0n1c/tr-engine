@@ -250,7 +250,7 @@ CREATE TABLE call_groups (
     tg_tag                 text,
     tg_group               text,
     transcription_text     text,
-    transcription_status   text         CHECK (transcription_status IN ('none', 'auto', 'reviewed', 'verified', 'excluded')),
+    transcription_status   text         CHECK (transcription_status IN ('none', 'auto', 'reviewed', 'verified', 'excluded', 'empty')),
     created_at             timestamptz  NOT NULL DEFAULT now(),
     updated_at             timestamptz  NOT NULL DEFAULT now()
 );
@@ -312,7 +312,7 @@ CREATE TABLE calls (
     tg_group              text,
     has_transcription     boolean      NOT NULL DEFAULT false,
     transcription_status  text         NOT NULL DEFAULT 'none'
-                                       CHECK (transcription_status IN ('none', 'auto', 'reviewed', 'verified', 'excluded')),
+                                       CHECK (transcription_status IN ('none', 'auto', 'reviewed', 'verified', 'excluded', 'empty')),
     transcription_text    text,
     transcription_word_count int,
     src_list              jsonb,

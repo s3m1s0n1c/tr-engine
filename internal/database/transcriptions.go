@@ -468,7 +468,7 @@ func (db *DB) ExportTranscriptions(ctx context.Context, systemIDs []int, start, 
 
 // UpdateCallTranscriptionStatus updates the transcription_status on a call and its group.
 func (db *DB) UpdateCallTranscriptionStatus(ctx context.Context, callID int64, startTime time.Time, status string) error {
-	valid := map[string]bool{"none": true, "auto": true, "reviewed": true, "verified": true, "excluded": true}
+	valid := map[string]bool{"none": true, "auto": true, "reviewed": true, "verified": true, "excluded": true, "empty": true}
 	if !valid[status] {
 		return fmt.Errorf("invalid transcription status: %s", status)
 	}

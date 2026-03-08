@@ -385,7 +385,8 @@ func (wp *WorkerPool) processJob(log zerolog.Logger, job Job) error {
 
 	text := strings.TrimSpace(resp.Text)
 	if text == "" {
-		log.Debug().Int64("call_id", job.CallID).Msg("provider returned empty text, skipping")
+		log.Debug().Int64("call_id", job.CallID).Msg("provider returned empty text, marking as empty")
+		_ = wp.db.UpdateCallTranscriptionStatus(ctx, job.CallID, job.CallStartTime, "empty")
 		return nil
 	}
 

@@ -3937,13 +3937,14 @@ components:
 
     TranscriptionStatus:
       type: string
-      enum: [none, auto, reviewed, verified, excluded]
+      enum: [none, auto, reviewed, verified, excluded, empty]
       description: |
         - **none**: no transcription attempted
         - **auto**: machine-transcribed, unreviewed
         - **reviewed**: passed quality checks
         - **verified**: human-verified correct
         - **excluded**: permanently excluded from dataset
+        - **empty**: STT provider returned no text (no legible audio)
 
     TranscriptionSource:
       type: string

@@ -74,6 +74,20 @@ ALTER TABLE systems ADD CONSTRAINT systems_system_type_check
 		sql:   `ALTER TABLE transcriptions ADD COLUMN IF NOT EXISTS provider_ms int`,
 		check: `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'transcriptions' AND column_name = 'provider_ms')`,
 	},
+	{
+		name: "add empty to transcription_status check constraints",
+		sql: `
+			ALTER TABLE calls DROP CONSTRAINT IF EXISTS calls_transcription_status_check;
+			ALTER TABLE calls ADD CONSTRAINT calls_transcription_status_check
+				CHECK (transcription_status IN ('none', 'auto', 'reviewed', 'verified', 'excluded', 'empty'));
+			ALTER TABLE call_groups DROP CONSTRAINT IF EXISTS call_groups_transcription_status_check;
+			ALTER TABLE call_groups ADD CONSTRAINT call_groups_transcription_status_check
+				CHECK (transcription_status IN ('none', 'auto', 'reviewed', 'verified', 'excluded', 'empty'))`,
+		check: `SELECT EXISTS (
+			SELECT 1 FROM information_schema.check_constraints
+			WHERE constraint_name = 'calls_transcription_status_check'
+			  AND check_clause LIKE '%empty%')`,
+	},
 }
 
 // Migrate runs all pending schema migrations.

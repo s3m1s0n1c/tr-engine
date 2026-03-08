@@ -2795,6 +2795,167 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /admin/transcribe-backfill:
+    post:
+      operationId: submitTranscribeBackfill
+      summary: Submit transcription backfill job
+      description: |
+        Queues a background job to find untranscribed calls matching the
+        provided filters and drip-feed them into the transcription queue.
+        Jobs are processed sequentially — if a job is already active, the
+        new job is queued. All filter fields are optional; omitting all
+        filters backfills every untranscribed call.
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BackfillFilters"
+      responses:
+        "202":
+          description: Backfill job accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: integer
+                    description: Unique identifier for this backfill job
+                    example: 1
+                  position:
+                    type: integer
+                    description: Position in the queue (0 = active, 1+ = queued)
+                    example: 0
+                  total:
+                    type: integer
+                    description: Number of untranscribed calls matching filters
+                    example: 342
+                  filters:
+                    $ref: "#/components/schemas/BackfillFilters"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: Transcription not configured or pipeline not running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      operationId: getTranscribeBackfillStatus
+      summary: Get transcription backfill status
+      description: |
+        Returns the active and queued backfill jobs. The `active` field
+        is null when no job is currently running. The `queued` array
+        contains jobs waiting to start, in submission order.
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Backfill status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackfillStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          description: Pipeline not running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: cancelAllTranscribeBackfill
+      summary: Cancel all backfill jobs
+      description: Cancels the active backfill job (if any) and all queued jobs.
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: All backfill jobs cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cancelled:
+                    type: boolean
+                    example: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: No backfill jobs found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Pipeline not running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /admin/transcribe-backfill/{job_id}:
+    delete:
+      operationId: cancelTranscribeBackfill
+      summary: Cancel a specific backfill job
+      description: |
+        Cancels a specific backfill job by ID. If the job is currently
+        active, it is stopped. If it is queued, it is removed from the queue.
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          description: Backfill job ID
+          schema:
+            type: integer
+            example: 1
+      responses:
+        "200":
+          description: Backfill job cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cancelled:
+                    type: boolean
+                    example: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Pipeline not running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
 # ============================================================
 # COMPONENTS
 # ============================================================
@@ -5180,3 +5341,73 @@ components:
           type: integer
           description: "Rows deleted in phase 2 (>1 month old: keep 1 per hour)"
           example: 120
+
+    BackfillFilters:
+      type: object
+      description: Optional filters for a transcription backfill job. All fields are optional — omitting all filters targets every untranscribed call.
+      properties:
+        system_id:
+          type: integer
+          description: Restrict to calls from this system
+          example: 1
+        tgids:
+          type: array
+          items:
+            type: integer
+          description: Restrict to calls on these talkgroup IDs
+          example: [9178, 9112]
+        start_time:
+          type: string
+          format: date-time
+          description: Only include calls after this time (RFC 3339)
+        end_time:
+          type: string
+          format: date-time
+          description: Only include calls before this time (RFC 3339)
+
+    BackfillJob:
+      type: object
+      description: State of a single transcription backfill job.
+      properties:
+        job_id:
+          type: integer
+          description: Unique job identifier
+          example: 1
+        filters:
+          $ref: "#/components/schemas/BackfillFilters"
+        total:
+          type: integer
+          description: Total calls to process in this job
+          example: 342
+        completed:
+          type: integer
+          description: Number of calls successfully transcribed so far
+          example: 57
+        failed:
+          type: integer
+          description: Number of calls that failed transcription
+          example: 2
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When processing started (null if still queued)
+        created_at:
+          type: string
+          format: date-time
+          description: When the job was submitted
+
+    BackfillStatus:
+      type: object
+      description: Current state of the transcription backfill system.
+      properties:
+        active:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/BackfillJob"
+          description: Currently running backfill job, or null if idle
+        queued:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackfillJob"
+          description: Jobs waiting to start, in submission order

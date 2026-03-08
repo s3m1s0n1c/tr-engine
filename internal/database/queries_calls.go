@@ -248,6 +248,7 @@ func (db *DB) CountUntranscribedCalls(ctx context.Context, filter BackfillFilter
 		FROM calls
 		WHERE (has_transcription = false OR has_transcription IS NULL)
 		  AND (encrypted IS NULL OR encrypted = false)
+		  AND audio_file_path IS NOT NULL
 		  AND ($1::float8 IS NULL OR duration >= $1)
 		  AND ($2::float8 IS NULL OR duration <= $2)
 		  AND ($3::int IS NULL OR system_id = $3)
@@ -269,6 +270,7 @@ func (db *DB) ListUntranscribedCallIDs(ctx context.Context, filter BackfillFilte
 		FROM calls
 		WHERE (has_transcription = false OR has_transcription IS NULL)
 		  AND (encrypted IS NULL OR encrypted = false)
+		  AND audio_file_path IS NOT NULL
 		  AND ($1::float8 IS NULL OR duration >= $1)
 		  AND ($2::float8 IS NULL OR duration <= $2)
 		  AND ($3::int IS NULL OR system_id = $3)

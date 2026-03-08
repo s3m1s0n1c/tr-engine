@@ -229,6 +229,75 @@ func (db *DB) GetCallByID(ctx context.Context, callID int64) (*CallAPI, error) {
 	return &c, nil
 }
 
+// BackfillFilter specifies filters for finding untranscribed calls.
+type BackfillFilter struct {
+	SystemID    *int
+	Tgids       []int
+	StartTime   *time.Time
+	EndTime     *time.Time
+	MinDuration float64
+	MaxDuration float64
+}
+
+// CountUntranscribedCalls returns the count of calls matching the filter
+// that have no transcription and are not encrypted.
+func (db *DB) CountUntranscribedCalls(ctx context.Context, filter BackfillFilter) (int, error) {
+	var count int
+	err := db.Pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM calls
+		WHERE (has_transcription = false OR has_transcription IS NULL)
+		  AND (encrypted IS NULL OR encrypted = false)
+		  AND ($1::float8 IS NULL OR duration >= $1)
+		  AND ($2::float8 IS NULL OR duration <= $2)
+		  AND ($3::int IS NULL OR system_id = $3)
+		  AND ($4::int[] IS NULL OR tgid = ANY($4))
+		  AND ($5::timestamptz IS NULL OR start_time >= $5)
+		  AND ($6::timestamptz IS NULL OR start_time < $6)
+	`, nilIfZeroFloat(filter.MinDuration), nilIfZeroFloat(filter.MaxDuration),
+		filter.SystemID, pqIntArray(filter.Tgids),
+		filter.StartTime, filter.EndTime,
+	).Scan(&count)
+	return count, err
+}
+
+// ListUntranscribedCallIDs returns call IDs matching the filter that have no
+// transcription and are not encrypted, ordered by start_time DESC.
+func (db *DB) ListUntranscribedCallIDs(ctx context.Context, filter BackfillFilter, limit, offset int) ([]int64, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT call_id
+		FROM calls
+		WHERE (has_transcription = false OR has_transcription IS NULL)
+		  AND (encrypted IS NULL OR encrypted = false)
+		  AND ($1::float8 IS NULL OR duration >= $1)
+		  AND ($2::float8 IS NULL OR duration <= $2)
+		  AND ($3::int IS NULL OR system_id = $3)
+		  AND ($4::int[] IS NULL OR tgid = ANY($4))
+		  AND ($5::timestamptz IS NULL OR start_time >= $5)
+		  AND ($6::timestamptz IS NULL OR start_time < $6)
+		ORDER BY start_time DESC
+		LIMIT $7 OFFSET $8
+	`, nilIfZeroFloat(filter.MinDuration), nilIfZeroFloat(filter.MaxDuration),
+		filter.SystemID, pqIntArray(filter.Tgids),
+		filter.StartTime, filter.EndTime,
+		limit, offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // CallFrequencyAPI represents a frequency entry for API responses.
 type CallFrequencyAPI struct {
 	Freq       int64    `json:"freq"`

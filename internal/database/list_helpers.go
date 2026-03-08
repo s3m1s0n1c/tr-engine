@@ -43,3 +43,10 @@ func pqString(s string) any {
 	}
 	return s
 }
+
+func nilIfZeroFloat(f float64) any {
+	if f == 0 {
+		return nil
+	}
+	return f
+}

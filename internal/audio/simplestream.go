@@ -74,6 +74,11 @@ func (s *SimplestreamSource) Start(ctx context.Context, out chan<- AudioChunk) e
 	s.addr = conn.LocalAddr().String()
 	s.mu.Unlock()
 
+	// Increase kernel UDP receive buffer to absorb bursts (1 MB).
+	if err := conn.SetReadBuffer(1 << 20); err != nil {
+		s.log.Warn().Err(err).Msg("failed to set UDP read buffer size")
+	}
+
 	s.log.Info().Str("addr", s.addr).Msg("simplestream listening")
 
 	// Close the connection when ctx is cancelled to unblock ReadFromUDP
@@ -101,8 +106,12 @@ func (s *SimplestreamSource) Start(ctx context.Context, out chan<- AudioChunk) e
 			continue
 		}
 
+		// Non-blocking send: drop chunks rather than stalling the UDP read
+		// loop, which would cause kernel buffer overflow and packet loss.
 		select {
 		case out <- chunk:
+		default:
+			s.log.Warn().Int("tgid", chunk.TGID).Msg("dropping audio chunk: router channel full")
 		case <-ctx.Done():
 			return nil
 		}

@@ -347,11 +347,17 @@ class AudioEngine {
   _feedPCM(key, int16Samples, sampleRate) {
     var nodes = this.tgNodes.get(key);
     if (!nodes) return;
-    nodes.worklet.port.postMessage({
+    var msg = {
       type: 'audio',
       samples: int16Samples,
       sampleRate: sampleRate,
-    });
+    };
+    // Transfer the underlying ArrayBuffer to the worklet thread (zero-copy).
+    if (this._useWorklet) {
+      nodes.worklet.port.postMessage(msg, [int16Samples.buffer]);
+    } else {
+      nodes.worklet.port.postMessage(msg);
+    }
     nodes.lastActivity = Date.now();
   }
 
@@ -472,7 +478,7 @@ class AudioEngine {
     var bufferSize = 2048;
     var scriptNode = ctx.createScriptProcessor(bufferSize, 0, 1);
 
-    var ringBuf = new Float32Array(16384);
+    var ringBuf = new Float32Array(32768);
     var writePos = 0;
     var readPos = 0;
     var buffered = 0;
@@ -504,7 +510,7 @@ class AudioEngine {
       var outRate = e.outputBuffer.sampleRate;
 
       if (!playing) {
-        var startThreshold = Math.floor(inputSampleRate * 0.3);
+        var startThreshold = Math.floor(inputSampleRate * 0.2);
         if (buffered >= startThreshold) {
           playing = true;
           silentFrames = 0;
@@ -538,7 +544,7 @@ class AudioEngine {
 
       if (!hadData) {
         silentFrames++;
-        if (silentFrames > 37) {
+        if (silentFrames > 188) {
           playing = false;
           silentFrames = 0;
         }

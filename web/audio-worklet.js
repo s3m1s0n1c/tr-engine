@@ -4,7 +4,7 @@
 class RadioAudioProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.buffer = new Float32Array(16384); // ~2s ring buffer at 8kHz
+    this.buffer = new Float32Array(32768); // ~4s ring buffer at 8kHz
     this.writePos = 0;
     this.readPos = 0;
     this.buffered = 0;
@@ -52,11 +52,11 @@ class RadioAudioProcessor extends AudioWorkletProcessor {
     if (!output) return true;
 
     // Jitter buffer with soft underrun handling:
-    // - Accumulate 300ms before first playout (absorb initial jitter)
+    // - Accumulate 200ms before first playout (absorb initial jitter)
     // - During playback, ride through brief underruns with silence
-    // - Only fully stop after 100ms of sustained empty buffer (~38 process() calls)
+    // - Only fully stop after 500ms of sustained empty buffer (~190 process() calls)
     if (!this.playing) {
-      const startThreshold = Math.floor(this.inputSampleRate * 0.3); // 300ms
+      const startThreshold = Math.floor(this.inputSampleRate * 0.2); // 200ms
       if (this.buffered >= startThreshold) {
         this.playing = true;
         this.silentFrames = 0;
@@ -98,11 +98,13 @@ class RadioAudioProcessor extends AudioWorkletProcessor {
       }
     }
 
-    // Track sustained underruns: only stop after ~100ms of empty buffer
+    // Track sustained underruns: only stop after ~500ms of empty buffer.
+    // Radio audio has natural pauses — stopping too early causes repeated
+    // stop/start cycles with audible gaps.
     if (!hadData) {
       this.silentFrames++;
-      // 100ms at 48kHz with 128-sample blocks = ~37 frames
-      if (this.silentFrames > 37) {
+      // 500ms at 48kHz with 128-sample blocks = ~188 frames
+      if (this.silentFrames > 188) {
         this.playing = false;
         this.silentFrames = 0;
       }

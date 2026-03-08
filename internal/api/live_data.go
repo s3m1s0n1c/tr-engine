@@ -247,8 +247,8 @@ type BackfillJobData struct {
 	JobID     int                 `json:"job_id"`
 	Filters   BackfillFiltersData `json:"filters"`
 	Total     int                 `json:"total"`
-	Completed int64               `json:"completed,omitempty"`
-	Failed    int64               `json:"failed,omitempty"`
+	Completed int64               `json:"completed"`
+	Failed    int64               `json:"failed"`
 	StartedAt *time.Time          `json:"started_at,omitempty"`
 	CreatedAt time.Time           `json:"created_at"`
 }

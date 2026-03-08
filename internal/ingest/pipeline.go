@@ -296,8 +296,6 @@ func (p *Pipeline) Start(ctx context.Context) error {
 	go p.affiliationEvictionLoop()
 	if p.transcriber != nil {
 		p.transcriber.Start()
-	}
-	if p.transcriber != nil {
 		p.backfill = NewBackfillManager(p.ctx, p.db, p.transcriber, p.log)
 		p.backfill.Start()
 	}

@@ -1,7 +1,9 @@
 package api
 
 import (
+	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/snarg/tr-engine/internal/database"
@@ -85,9 +87,87 @@ func (h *AdminHandler) RunMaintenance(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, result)
 }
 
+// SubmitBackfill queues a transcription backfill job.
+func (h *AdminHandler) SubmitBackfill(w http.ResponseWriter, r *http.Request) {
+	if h.live == nil {
+		WriteError(w, http.StatusServiceUnavailable, "pipeline not running")
+		return
+	}
+
+	var body BackfillFiltersData
+	if r.ContentLength != 0 {
+		if err := DecodeJSON(r, &body); err != nil && err != io.EOF {
+			WriteErrorWithCode(w, http.StatusBadRequest, ErrInvalidBody, "invalid request body")
+			return
+		}
+	}
+
+	jobID, position, total, err := h.live.SubmitBackfill(r.Context(), body)
+	if err != nil {
+		WriteError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+
+	WriteJSON(w, http.StatusAccepted, map[string]any{
+		"job_id":   jobID,
+		"position": position,
+		"total":    total,
+		"filters":  body,
+	})
+}
+
+// GetBackfillStatus returns the active and queued backfill jobs.
+func (h *AdminHandler) GetBackfillStatus(w http.ResponseWriter, r *http.Request) {
+	if h.live == nil {
+		WriteError(w, http.StatusServiceUnavailable, "pipeline not running")
+		return
+	}
+
+	status := h.live.BackfillStatus()
+	if status == nil {
+		WriteJSON(w, http.StatusOK, map[string]any{
+			"active": nil,
+			"queued": []BackfillJobData{},
+		})
+		return
+	}
+	WriteJSON(w, http.StatusOK, status)
+}
+
+// CancelBackfill cancels a backfill job by ID, or all jobs if no ID is given.
+func (h *AdminHandler) CancelBackfill(w http.ResponseWriter, r *http.Request) {
+	if h.live == nil {
+		WriteError(w, http.StatusServiceUnavailable, "pipeline not running")
+		return
+	}
+
+	id := 0
+	if idStr := chi.URLParam(r, "id"); idStr != "" {
+		var err error
+		id, err = strconv.Atoi(idStr)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, "invalid job id")
+			return
+		}
+	}
+
+	if !h.live.CancelBackfill(id) {
+		WriteError(w, http.StatusNotFound, "job not found")
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, map[string]any{
+		"cancelled": true,
+	})
+}
+
 // Routes registers admin routes on the given router.
 func (h *AdminHandler) Routes(r chi.Router) {
 	r.Post("/admin/systems/merge", h.MergeSystems)
 	r.Get("/admin/maintenance", h.GetMaintenance)
 	r.Post("/admin/maintenance", h.RunMaintenance)
+	r.Post("/admin/transcribe-backfill", h.SubmitBackfill)
+	r.Get("/admin/transcribe-backfill", h.GetBackfillStatus)
+	r.Delete("/admin/transcribe-backfill/{id}", h.CancelBackfill)
+	r.Delete("/admin/transcribe-backfill", h.CancelBackfill)
 }

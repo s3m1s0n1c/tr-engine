@@ -206,6 +206,7 @@ func NewPipeline(opts PipelineOptions) *Pipeline {
 	if opts.StreamListen != "" {
 		audioBus = audio.NewAudioBus()
 		audioRouter = audio.NewAudioRouter(audioBus, identity, opts.StreamIdleTimeout, opts.StreamOpusBitrate)
+		audioRouter.SetLogger(log)
 		log.Info().Msg("live audio streaming infrastructure initialized")
 	}
 

@@ -355,6 +355,7 @@ func main() {
 	// Start live audio streaming if configured
 	if cfg.StreamListen != "" {
 		src := audio.NewSimplestreamSource(cfg.StreamListen, cfg.StreamSampleRate)
+		src.SetLogger(log)
 		if input := pipeline.AudioRouterInput(); input != nil {
 			go func() {
 				if err := src.Start(ctx, input); err != nil {

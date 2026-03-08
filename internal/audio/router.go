@@ -43,6 +43,11 @@ type AudioRouter struct {
 // multi-site streams, encodes audio, and publishes frames to the given AudioBus.
 // opusBitrate controls encoding: 0 = PCM passthrough, >0 = Opus encoding (falls
 // back to PCM passthrough if Opus is not available in this build).
+// SetLogger assigns a real logger (replaces the default no-op logger).
+func (r *AudioRouter) SetLogger(l zerolog.Logger) {
+	r.log = l.With().Str("component", "audio_router").Logger()
+}
+
 func NewAudioRouter(bus *AudioBus, identity IdentityLookup, idleTimeout time.Duration, opusBitrate int) *AudioRouter {
 	return &AudioRouter{
 		bus:           bus,

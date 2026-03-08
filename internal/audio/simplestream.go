@@ -43,6 +43,11 @@ func NewSimplestreamSource(listenAddr string, defaultSampleRate int) *Simplestre
 	}
 }
 
+// SetLogger assigns a real logger (replaces the default no-op logger).
+func (s *SimplestreamSource) SetLogger(l zerolog.Logger) {
+	s.log = l.With().Str("component", "simplestream").Logger()
+}
+
 // Addr returns the actual listen address after binding. Returns empty string
 // until Start has bound the socket.
 func (s *SimplestreamSource) Addr() string {
@@ -105,48 +110,27 @@ func (s *SimplestreamSource) Start(ctx context.Context, out chan<- AudioChunk) e
 }
 
 // parsePacket attempts to parse a simplestream UDP packet.
-// It tries sendJSON mode first, then falls back to sendTGID mode.
+// Supports three formats:
+//  1. sendJSON with valid length prefix: [4-byte JSON length LE][JSON][PCM]
+//  2. sendJSON with corrupt length prefix: [4 bytes junk][JSON delimited by {}][PCM]
+//     (some TR builds have a scatter-gather bug that corrupts the length prefix)
+//  3. sendTGID: [4-byte TGID LE][int16 PCM samples]
+//
 // Returns false for malformed packets.
 func (s *SimplestreamSource) parsePacket(data []byte) (AudioChunk, bool) {
-	// Need at least 4 bytes for either mode (JSON length or TGID)
 	if len(data) < 4 {
 		s.log.Warn().Int("len", len(data)).Msg("simplestream packet too short")
 		return AudioChunk{}, false
 	}
 
-	// Try sendJSON mode first: [4-byte JSON length LE][JSON][PCM samples]
-	jsonLen := int(binary.LittleEndian.Uint32(data[0:4]))
-	if jsonLen > 0 && jsonLen < len(data)-4 {
-		jsonBytes := data[4 : 4+jsonLen]
-		var meta simplestreamMeta
-		if json.Unmarshal(jsonBytes, &meta) == nil && meta.Talkgroup > 0 {
-			pcmStart := 4 + jsonLen
-			pcmData := make([]byte, len(data)-pcmStart)
-			copy(pcmData, data[pcmStart:])
-
-			sampleRate := meta.AudioSampleRate
-			if sampleRate == 0 {
-				sampleRate = s.defaultSampleRate
-			}
-
-			return AudioChunk{
-				ShortName:  meta.ShortName,
-				TGID:       meta.Talkgroup,
-				UnitID:     meta.Src,
-				Freq:       meta.Freq,
-				TGAlphaTag: meta.TalkgroupTag,
-				Format:     AudioFormatPCM,
-				SampleRate: sampleRate,
-				Data:       pcmData,
-				Timestamp:  time.Now(),
-			}, true
-		}
+	// Try sendJSON mode: look for JSON either via length prefix or by scanning for '{'.
+	if chunk, ok := s.tryParseJSON(data); ok {
+		return chunk, true
 	}
 
 	// Fall back to sendTGID mode: [4-byte TGID LE][int16 PCM samples]
 	tgid := int(binary.LittleEndian.Uint32(data[0:4]))
 	if tgid <= 0 {
-		s.log.Warn().Int("tgid", tgid).Msg("simplestream invalid TGID in sendTGID mode")
 		return AudioChunk{}, false
 	}
 
@@ -157,6 +141,74 @@ func (s *SimplestreamSource) parsePacket(data []byte) (AudioChunk, bool) {
 		TGID:       tgid,
 		Format:     AudioFormatPCM,
 		SampleRate: s.defaultSampleRate,
+		Data:       pcmData,
+		Timestamp:  time.Now(),
+	}, true
+}
+
+// tryParseJSON attempts to extract JSON metadata from a sendJSON packet.
+// It first tries the documented format (4-byte LE length prefix), then falls
+// back to scanning for '{' near the start of the packet.
+func (s *SimplestreamSource) tryParseJSON(data []byte) (AudioChunk, bool) {
+	var jsonBytes []byte
+	var pcmStart int
+
+	// Method 1: trust the 4-byte length prefix
+	jsonLen := int(binary.LittleEndian.Uint32(data[0:4]))
+	if jsonLen > 0 && jsonLen <= len(data)-4 && data[4] == '{' {
+		jsonBytes = data[4 : 4+jsonLen]
+		pcmStart = 4 + jsonLen
+	} else {
+		// Method 2: scan for JSON object starting near byte 4
+		// Some TR builds corrupt the length prefix (scatter-gather bug)
+		jsonStart := -1
+		for i := 0; i < min(8, len(data)); i++ {
+			if data[i] == '{' {
+				jsonStart = i
+				break
+			}
+		}
+		if jsonStart < 0 {
+			return AudioChunk{}, false
+		}
+
+		// Find the closing '}' — JSON is a single flat object (no nested braces)
+		jsonEnd := -1
+		for i := jsonStart + 1; i < len(data); i++ {
+			if data[i] == '}' {
+				jsonEnd = i
+				break
+			}
+		}
+		if jsonEnd < 0 {
+			return AudioChunk{}, false
+		}
+
+		jsonBytes = data[jsonStart : jsonEnd+1]
+		pcmStart = jsonEnd + 1
+	}
+
+	var meta simplestreamMeta
+	if json.Unmarshal(jsonBytes, &meta) != nil || meta.Talkgroup == 0 {
+		return AudioChunk{}, false
+	}
+
+	pcmData := make([]byte, len(data)-pcmStart)
+	copy(pcmData, data[pcmStart:])
+
+	sampleRate := meta.AudioSampleRate
+	if sampleRate == 0 {
+		sampleRate = s.defaultSampleRate
+	}
+
+	return AudioChunk{
+		ShortName:  meta.ShortName,
+		TGID:       meta.Talkgroup,
+		UnitID:     meta.Src,
+		Freq:       meta.Freq,
+		TGAlphaTag: meta.TalkgroupTag,
+		Format:     AudioFormatPCM,
+		SampleRate: sampleRate,
 		Data:       pcmData,
 		Timestamp:  time.Now(),
 	}, true

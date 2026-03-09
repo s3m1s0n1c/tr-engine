@@ -21,6 +21,11 @@ class AudioEngine {
     this._intentionalClose = false;
     this._serverAudioFormat = null; // set by server 'config' message; null = auto-detect
     this._autoPan = true; // auto-distribute channels across stereo field
+    this._jitterTracking = new Map();  // key -> jitter entry
+    this._transmissionLog = [];        // completed transmissions
+    this._maxTransmissions = 100;
+    this._transmissionGapMs = 500;     // gap > 500ms = new transmission
+    this._maxDeltas = 500;             // circular buffer size
   }
 
   // Event emitter
@@ -228,6 +233,83 @@ class AudioEngine {
     return this.ws && this.ws.readyState === WebSocket.OPEN;
   }
 
+  getJitterStats() {
+    var result = {};
+    var self = this;
+    this._jitterTracking.forEach(function(entry, key) {
+      result[key] = {
+        client: self._snapshotJitterStats(entry.stats),
+        server: self._snapshotJitterStats(entry.serverStats),
+        network: self._snapshotJitterStats(entry.networkStats),
+        deltas: entry.deltas.slice(),
+        activeTransmission: entry.transmission
+      };
+    });
+    return result;
+  }
+
+  getTransmissionLog() {
+    return this._transmissionLog.slice();
+  }
+
+  // --- Jitter tracking helpers ---
+
+  _newJitterEntry() {
+    return {
+      prevClientTime: 0,
+      prevServerTs: 0,
+      stats: { count: 0, min: Infinity, max: 0, mean: 0, m2: 0, last: 0 },
+      serverStats: { count: 0, min: Infinity, max: 0, mean: 0, m2: 0, last: 0 },
+      networkStats: { count: 0, min: Infinity, max: 0, mean: 0, m2: 0, last: 0 },
+      deltas: [],
+      deltaIdx: 0,
+      transmission: null
+    };
+  }
+
+  _addJitterSample(stats, value) {
+    stats.count++;
+    stats.last = value;
+    if (stats.count === 1) {
+      stats.min = value;
+      stats.max = value;
+      stats.mean = value;
+      stats.m2 = 0;
+      return;
+    }
+    if (value < stats.min) stats.min = value;
+    if (value > stats.max) stats.max = value;
+    var delta = value - stats.mean;
+    stats.mean += delta / stats.count;
+    var delta2 = value - stats.mean;
+    stats.m2 += delta * delta2;
+  }
+
+  _jitterStddev(stats) {
+    if (stats.count < 2) return 0;
+    return Math.sqrt(stats.m2 / stats.count);
+  }
+
+  _resetJitterStats(stats) {
+    stats.count = 0;
+    stats.min = Infinity;
+    stats.max = 0;
+    stats.mean = 0;
+    stats.m2 = 0;
+    stats.last = 0;
+  }
+
+  _snapshotJitterStats(stats) {
+    return {
+      count: stats.count,
+      min: stats.count > 0 ? stats.min : 0,
+      max: stats.max,
+      mean: stats.mean,
+      stddev: this._jitterStddev(stats),
+      last: stats.last
+    };
+  }
+
   // --- Internal ---
 
   _installGestureResume() {
@@ -318,13 +400,101 @@ class AudioEngine {
     var view = new DataView(buffer);
     var systemId = view.getUint16(0);
     var tgid = view.getUint32(2);
-    // timestamp at offset 6 (4 bytes) - available for latency measurement
-    // seq at offset 10 (2 bytes) - available for gap detection
+    var serverTs = view.getUint32(6);
+    var seq = view.getUint16(10);
     var sampleRate = view.getUint16(12) || 8000;
 
     var audioData = buffer.slice(14);
     var audioLen = audioData.byteLength;
     var key = systemId + ':' + tgid;
+
+    // --- Jitter tracking ---
+    var now = performance.now();
+    var entry = this._jitterTracking.get(key);
+    if (!entry) {
+      entry = this._newJitterEntry();
+      this._jitterTracking.set(key, entry);
+    }
+
+    // Detect transmission boundary (gap > 500ms)
+    if (entry.prevClientTime > 0) {
+      var gap = now - entry.prevClientTime;
+      if (gap > this._transmissionGapMs && entry.transmission) {
+        // End current transmission
+        entry.transmission.endTime = entry.prevClientTime;
+        entry.transmission.duration = entry.transmission.endTime - entry.transmission.startTime;
+        entry.transmission.clientStats = this._snapshotJitterStats(entry.stats);
+        entry.transmission.serverStats = this._snapshotJitterStats(entry.serverStats);
+        entry.transmission.networkStats = this._snapshotJitterStats(entry.networkStats);
+        this._transmissionLog.push(entry.transmission);
+        if (this._transmissionLog.length > this._maxTransmissions) {
+          this._transmissionLog.shift();
+        }
+        this.emit('transmission_end', entry.transmission);
+        entry.transmission = null;
+        this._resetJitterStats(entry.stats);
+        this._resetJitterStats(entry.serverStats);
+        this._resetJitterStats(entry.networkStats);
+        entry.deltas = [];
+        entry.deltaIdx = 0;
+      }
+    }
+
+    // Start new transmission if needed
+    if (!entry.transmission) {
+      entry.transmission = {
+        key: key,
+        tgid: tgid,
+        systemId: systemId,
+        startTime: now,
+        endTime: 0,
+        duration: 0,
+        frameCount: 0,
+        seqGaps: 0,
+        lastSeq: seq,
+        deltas: [],
+        clientStats: null,
+        serverStats: null,
+        networkStats: null
+      };
+      this.emit('transmission_start', entry.transmission);
+    }
+
+    entry.transmission.frameCount++;
+
+    // Seq gap detection (skip first frame)
+    if (entry.transmission.frameCount > 1) {
+      var expectedSeq = (entry.transmission.lastSeq + 1) & 0xFFFF;
+      if (seq !== expectedSeq) {
+        entry.transmission.seqGaps++;
+      }
+    }
+    entry.transmission.lastSeq = seq;
+
+    // Compute deltas (need at least 2 frames)
+    if (entry.prevClientTime > 0 && entry.prevServerTs > 0) {
+      var clientDelta = now - entry.prevClientTime;
+      var serverDelta = serverTs - entry.prevServerTs;
+      var networkJitter = clientDelta - serverDelta;
+
+      this._addJitterSample(entry.stats, clientDelta);
+      this._addJitterSample(entry.serverStats, serverDelta);
+      this._addJitterSample(entry.networkStats, networkJitter);
+
+      var sample = { clientDelta: clientDelta, serverDelta: serverDelta, networkJitter: networkJitter, ts: now };
+      if (entry.deltas.length < this._maxDeltas) {
+        entry.deltas.push(sample);
+      } else {
+        entry.deltas[entry.deltaIdx] = sample;
+        entry.deltaIdx = (entry.deltaIdx + 1) % this._maxDeltas;
+      }
+      entry.transmission.deltas.push(sample);
+      this.emit('jitter_sample', { key: key, sample: sample });
+    }
+
+    entry.prevClientTime = now;
+    entry.prevServerTs = serverTs;
+    // --- End jitter tracking ---
 
     if (!this.tgNodes.has(key)) {
       this._createTG(key, tgid, systemId);

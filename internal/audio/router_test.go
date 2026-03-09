@@ -213,6 +213,52 @@ func TestRouterIdleStreamRelease(t *testing.T) {
 	}
 }
 
+func TestRouterTracksJitter(t *testing.T) {
+	bus := NewAudioBus()
+	mock := &mockIdentityLookup{
+		systems: map[string]identityResult{
+			"butco": {systemID: 1, siteID: 10},
+		},
+	}
+	router := NewAudioRouter(bus, mock, 10*time.Second, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go router.Run(ctx)
+
+	ch, unsub := bus.Subscribe(AudioFilter{})
+	defer unsub()
+
+	// Send 3 chunks with controlled timestamps
+	for i := 0; i < 3; i++ {
+		chunk := makeChunk("butco", 1001, 500)
+		chunk.Timestamp = time.Now()
+		router.Input() <- chunk
+		select {
+		case <-ch:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	stats := router.GetJitterStats()
+	s, ok := stats["1:1001"]
+	if !ok {
+		t.Fatal("no jitter stats for 1:1001")
+	}
+	// After 3 chunks, we should have 2 deltas
+	if s.Count != 2 {
+		t.Errorf("jitter Count = %d, want 2", s.Count)
+	}
+	if s.Min <= 0 {
+		t.Errorf("jitter Min = %f, should be > 0", s.Min)
+	}
+	if s.SystemID != 1 || s.TGID != 1001 {
+		t.Errorf("SystemID=%d TGID=%d, want 1/1001", s.SystemID, s.TGID)
+	}
+}
+
 func TestRouterActiveStreams(t *testing.T) {
 	bus := NewAudioBus()
 	mock := &mockIdentityLookup{

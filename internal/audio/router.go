@@ -21,6 +21,21 @@ type activeStream struct {
 	shortName string
 	lastChunk time.Time
 	seq       uint16
+	jitter    JitterStats
+	startedAt time.Time
+}
+
+// StreamJitterSnapshot is a point-in-time snapshot of jitter stats for one stream.
+type StreamJitterSnapshot struct {
+	SystemID  int       `json:"system_id"`
+	TGID      int       `json:"tgid"`
+	Count     int       `json:"count"`
+	Min       float64   `json:"min_ms"`
+	Max       float64   `json:"max_ms"`
+	Mean      float64   `json:"mean_ms"`
+	Stddev    float64   `json:"stddev_ms"`
+	Last      float64   `json:"last_delta_ms"`
+	StartedAt time.Time `json:"started_at"`
 }
 
 // AudioRouter receives AudioChunks, resolves identity (shortName to system/site),
@@ -131,8 +146,10 @@ func (r *AudioRouter) processChunk(chunk AudioChunk) {
 				// Stream is stale; allow takeover by the new site.
 				stream.siteID = siteID
 				stream.shortName = chunk.ShortName
-				stream.lastChunk = now
+				stream.lastChunk = chunk.Timestamp
 				stream.seq = 0
+				stream.jitter.Reset()
+				stream.startedAt = chunk.Timestamp
 			} else {
 				// Another site owns this stream; drop (dedup).
 				r.mu.Unlock()
@@ -144,9 +161,13 @@ func (r *AudioRouter) processChunk(chunk AudioChunk) {
 				return
 			}
 		} else {
-			// Same site — update timestamp and increment sequence.
-			stream.lastChunk = now
+			// Same site — compute jitter from receive timestamps, then update.
+			delta := chunk.Timestamp.Sub(stream.lastChunk)
+			stream.lastChunk = chunk.Timestamp
 			stream.seq++
+			if delta > 0 && delta < 10*time.Second { // sanity bound
+				stream.jitter.Add(float64(delta.Microseconds()) / 1000.0)
+			}
 		}
 	} else {
 		// New stream.
@@ -154,8 +175,9 @@ func (r *AudioRouter) processChunk(chunk AudioChunk) {
 			systemID:  systemID,
 			siteID:    siteID,
 			shortName: chunk.ShortName,
-			lastChunk: now,
+			lastChunk: chunk.Timestamp,
 			seq:       0,
+			startedAt: chunk.Timestamp,
 		}
 		r.activeStreams[key] = stream
 	}
@@ -190,6 +212,43 @@ func (r *AudioRouter) processChunk(chunk AudioChunk) {
 	}
 
 	r.bus.Publish(frame)
+}
+
+// GetJitterStats returns a snapshot of jitter stats for all active streams.
+func (r *AudioRouter) GetJitterStats() map[string]StreamJitterSnapshot {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	result := make(map[string]StreamJitterSnapshot, len(r.activeStreams))
+	for key, stream := range r.activeStreams {
+		snap := stream.jitter.Snapshot()
+		result[key] = StreamJitterSnapshot{
+			SystemID:  stream.systemID,
+			TGID:      extractTGID(key),
+			Count:     snap.Count,
+			Min:       snap.Min,
+			Max:       snap.Max,
+			Mean:      snap.Mean(),
+			Stddev:    snap.Stddev(),
+			Last:      snap.Last,
+			StartedAt: stream.startedAt,
+		}
+	}
+	return result
+}
+
+// extractTGID parses the talkgroup ID from a "systemID:tgid" key.
+func extractTGID(key string) int {
+	for i := len(key) - 1; i >= 0; i-- {
+		if key[i] == ':' {
+			v := 0
+			for _, c := range key[i+1:] {
+				v = v*10 + int(c-'0')
+			}
+			return v
+		}
+	}
+	return 0
 }
 
 // cleanupIdle removes streams and their encoders that have been idle longer than idleTimeout.

@@ -417,40 +417,62 @@
       }
       var w = canvas._cssW || canvas.width / dpr;
       var h = canvas._cssH || canvas.height / dpr;
+      var pad = 12; // top/bottom padding
 
       ctx.clearRect(0, 0, w, h);
 
       if (!deltas || deltas.length < 2) return;
 
-      // Reference line at expected delta (~20ms)
-      var refY = h - (20 / 150) * h;
       var styles = getComputedStyle(document.documentElement);
       var mutedColor = styles.getPropertyValue('--text-faint').trim() || '#555';
       var successColor = styles.getPropertyValue('--success').trim() || '#0f0';
       var warningColor = styles.getPropertyValue('--warning').trim() || '#ff0';
       var dangerColor = styles.getPropertyValue('--danger').trim() || '#f00';
 
+      // Compute mean and auto-scale Y-axis around it
+      var sum = 0;
+      var dMin = Infinity, dMax = -Infinity;
+      for (var i = 0; i < deltas.length; i++) {
+        var d = deltas[i].clientDelta;
+        sum += d;
+        if (d < dMin) dMin = d;
+        if (d > dMax) dMax = d;
+      }
+      var mean = sum / deltas.length;
+
+      // Y range: center on mean, show enough to see variation
+      // At minimum show ±30ms around mean, expand if data exceeds that
+      var spread = Math.max(dMax - dMin, 60);
+      var yMid = mean;
+      var yLo = Math.max(0, yMid - spread * 0.6);
+      var yHi = yMid + spread * 0.6;
+      // Ensure all points fit
+      if (dMin < yLo) yLo = dMin - 5;
+      if (dMax > yHi) yHi = dMax + 5;
+      var yRange = yHi - yLo;
+
+      // Reference line at mean
+      var meanY = pad + (1 - (mean - yLo) / yRange) * (h - pad * 2);
       ctx.strokeStyle = mutedColor;
       ctx.lineWidth = 0.5;
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
-      ctx.moveTo(0, refY);
-      ctx.lineTo(w, refY);
+      ctx.moveTo(0, meanY);
+      ctx.lineTo(w, meanY);
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Plot points
+      // Plot points — color by deviation from mean
       var xStep = w / Math.max(deltas.length - 1, 1);
-      var yMax = 150; // ms scale
-
       for (var i = 0; i < deltas.length; i++) {
         var d = deltas[i].clientDelta;
         var x = i * xStep;
-        var y = h - Math.min(d / yMax, 1) * h;
+        var y = pad + (1 - (d - yLo) / yRange) * (h - pad * 2);
 
+        var dev = Math.abs(d - mean);
         var color = successColor;
-        if (d > 60) color = dangerColor;
-        else if (d > 30) color = warningColor;
+        if (dev > mean * 0.5) color = dangerColor;
+        else if (dev > mean * 0.15) color = warningColor;
 
         ctx.fillStyle = color;
         ctx.globalAlpha = 0.8;
@@ -460,17 +482,18 @@
       }
       ctx.globalAlpha = 1;
 
-      // Label
+      // Labels
       ctx.fillStyle = mutedColor;
       ctx.font = '9px monospace';
-      ctx.fillText('20ms', 2, refY - 3);
-      ctx.fillText('150ms', 2, 10);
+      ctx.fillText(Math.round(mean) + 'ms', 2, meanY - 3);
+      ctx.fillText(Math.round(yHi) + 'ms', 2, pad + 1);
+      ctx.fillText(Math.round(yLo) + 'ms', 2, h - 2);
 
       if (isActive) {
         var accentColor = styles.getPropertyValue('--accent').trim() || '#0ff';
         ctx.fillStyle = accentColor;
         ctx.globalAlpha = 0.6;
-        ctx.fillText('LIVE', w - 24, 10);
+        ctx.fillText('LIVE', w - 24, pad + 1);
         ctx.globalAlpha = 1;
       }
     }
@@ -493,17 +516,33 @@
       var warningColor = styles.getPropertyValue('--warning').trim() || '#ff0';
       var dangerColor = styles.getPropertyValue('--danger').trim() || '#f00';
 
+      // Auto-scale around mean
+      var sum = 0, dMin = Infinity, dMax = -Infinity;
+      for (var i = 0; i < deltas.length; i++) {
+        var d = deltas[i].clientDelta;
+        sum += d;
+        if (d < dMin) dMin = d;
+        if (d > dMax) dMax = d;
+      }
+      var mean = sum / deltas.length;
+      var spread = Math.max(dMax - dMin, 60);
+      var yLo = Math.max(0, mean - spread * 0.6);
+      var yHi = mean + spread * 0.6;
+      if (dMin < yLo) yLo = dMin - 5;
+      if (dMax > yHi) yHi = dMax + 5;
+      var yRange = yHi - yLo;
+
       var xStep = w / Math.max(deltas.length - 1, 1);
-      var yMax = 150;
 
       for (var i = 0; i < deltas.length; i++) {
         var d = deltas[i].clientDelta;
         var x = i * xStep;
-        var y = h - Math.min(d / yMax, 1) * h;
+        var y = (1 - (d - yLo) / yRange) * h;
 
+        var dev = Math.abs(d - mean);
         var color = successColor;
-        if (d > 60) color = dangerColor;
-        else if (d > 30) color = warningColor;
+        if (dev > mean * 0.5) color = dangerColor;
+        else if (dev > mean * 0.15) color = warningColor;
 
         ctx.fillStyle = color;
         ctx.globalAlpha = 0.7;
@@ -858,10 +897,11 @@
         updateSummary();
       });
 
-      // Subscribe to all audio (diagnostics sees everything)
-      engine.start().then(function() {
-        engine.subscribe({ tgids: [], systems: [] });
-      });
+      // Diagnostics doesn't need audio playback — skip AudioContext setup
+      // and just open the WebSocket directly for jitter data.
+      engine._intentionalClose = false;
+      engine._connect();
+      engine.subscribe({ tgids: [], systems: [] });
 
       // Periodic summary update
       setInterval(updateSummary, 1000);

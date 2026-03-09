@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="auth.js?v=1"></script>
+  <meta name="card-title" content="Audio Diagnostics">
+  <meta name="card-description" content="Real-time jitter analysis and debug reporting">
+  <meta name="card-order" content="12">
+  <title>Audio Diagnostics — tr-engine</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=DM+Sans:wght@300;400;500;700&family=Outfit:wght@200;300;400;500;600;700;800;900&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,600;1,9..144,300&family=IBM+Plex+Mono:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&family=JetBrains+Mono:wght@300;400;500;600;700;800&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=Karla:wght@200;300;400;500&family=Syne:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Inter:wght@300;400;500;600;700;800&family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@400;500;700&family=VT323&family=Share+Tech+Mono&family=Press+Start+2P&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <script src="theme-config.js"></script>
+  <script src="audio-engine.js"></script>
+
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-body);
+      font-weight: var(--font-weight-body);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      transition: background 0.5s, color 0.4s;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .diag-wrap {
+      flex: 1;
+      padding: 80px 24px 40px;
+      max-width: 1400px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    /* ── Summary cards ─────────────────────────── */
+    .summary-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .stat-card {
+      background: var(--tile-bg);
+      border: 1px solid var(--tile-border);
+      border-radius: var(--radius-xs);
+      padding: 14px 16px;
+      transition: border-color 0.2s;
+    }
+
+    .stat-card-label {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+
+    .stat-card-value {
+      font-family: var(--font-mono);
+      font-size: 22px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .stat-card-value.good { color: var(--success); }
+    .stat-card-value.warn { color: var(--warning); }
+    .stat-card-value.bad { color: var(--danger); }
+
+    /* ── Controls row ──────────────────────────── */
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      background: var(--tile-bg);
+      border: 1px solid var(--tile-border);
+      border-radius: var(--radius-xs);
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      padding: 8px 16px;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .btn:hover { border-color: var(--accent); }
+    .btn.primary {
+      background: var(--accent);
+      color: var(--bg);
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+    .btn.primary:hover { opacity: 0.9; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--danger);
+      display: inline-block;
+      margin-right: 6px;
+    }
+    .status-dot.connected { background: var(--success); }
+
+    .status-text {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .spacer { flex: 1; }
+
+    /* ── Section headers ───────────────────────── */
+    .section { margin-bottom: 28px; }
+
+    .section-title {
+      font-family: var(--font-display);
+      font-weight: var(--font-weight-display);
+      font-size: 16px;
+      color: var(--text);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .section-count {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      background: var(--tile-bg);
+      border: 1px solid var(--tile-border);
+      border-radius: var(--radius-xs);
+      padding: 2px 8px;
+    }
+
+    /* ── Transmission cards ────────────────────── */
+    .tx-card {
+      background: var(--tile-bg);
+      border: 1px solid var(--tile-border);
+      border-radius: var(--radius-xs);
+      margin-bottom: 10px;
+      overflow: hidden;
+      transition: border-color 0.2s;
+    }
+    .tx-card.active { border-color: var(--accent); }
+    .tx-card.ended { opacity: 0.85; }
+
+    .tx-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      flex-wrap: wrap;
+    }
+
+    .tx-tg {
+      font-family: var(--font-mono);
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--accent);
+      min-width: 90px;
+    }
+
+    .tx-meta {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .tx-stat {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      display: flex;
+      gap: 4px;
+    }
+    .tx-stat-label { color: var(--text-faint); }
+    .tx-stat-val { color: var(--text-mid); }
+    .tx-stat-val.good { color: var(--success); }
+    .tx-stat-val.warn { color: var(--warning); }
+    .tx-stat-val.bad { color: var(--danger); }
+
+    .tx-chart-wrap {
+      padding: 0 14px 10px;
+    }
+
+    .tx-chart {
+      width: 100%;
+      height: 80px;
+      display: block;
+      border-radius: var(--radius-xs);
+    }
+
+    /* ── Completed transmission table ──────────── */
+    .tx-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .tx-table th {
+      text-align: left;
+      padding: 6px 10px;
+      color: var(--text-muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      border-bottom: 1px solid var(--tile-border);
+      font-weight: 500;
+    }
+
+    .tx-table td {
+      padding: 5px 10px;
+      color: var(--text-mid);
+      border-bottom: 1px solid var(--tile-border);
+      white-space: nowrap;
+    }
+
+    .tx-table tr:hover td { color: var(--text); }
+
+    .sparkline-cell {
+      padding: 2px 10px;
+    }
+
+    .sparkline {
+      width: 200px;
+      height: 24px;
+      display: block;
+    }
+
+    .report-status {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-left: 8px;
+    }
+    .report-status.ok { color: var(--success); }
+    .report-status.err { color: var(--danger); }
+
+    .empty-state {
+      text-align: center;
+      padding: 48px 24px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    @media (max-width: 768px) {
+      .diag-wrap { padding: 70px 12px 24px; }
+      .summary-row { grid-template-columns: repeat(2, 1fr); }
+      .tx-header { gap: 6px; }
+      .sparkline { width: 120px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="diag-wrap">
+
+    <!-- Summary cards -->
+    <div class="summary-row">
+      <div class="stat-card">
+        <div class="stat-card-label">Connection</div>
+        <div class="stat-card-value" id="card-conn">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Uptime</div>
+        <div class="stat-card-value" id="card-uptime">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Total Frames</div>
+        <div class="stat-card-value" id="card-frames">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Seq Gaps</div>
+        <div class="stat-card-value" id="card-gaps">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Transmissions</div>
+        <div class="stat-card-value" id="card-txcount">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Avg Client Jitter</div>
+        <div class="stat-card-value" id="card-jitter">--</div>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls">
+      <span class="status-dot" id="ws-dot"></span>
+      <span class="status-text" id="ws-status">Disconnected</span>
+      <span class="spacer"></span>
+      <button class="btn" id="btn-clear">Clear Log</button>
+      <button class="btn primary" id="btn-report">Send Debug Report</button>
+      <span class="report-status" id="report-status"></span>
+    </div>
+
+    <!-- Active transmissions -->
+    <div class="section" id="active-section">
+      <div class="section-title">
+        Active Transmissions
+        <span class="section-count" id="active-count">0</span>
+      </div>
+      <div id="active-list"></div>
+      <div class="empty-state" id="active-empty">Waiting for audio...</div>
+    </div>
+
+    <!-- Completed transmissions -->
+    <div class="section" id="completed-section">
+      <div class="section-title">
+        Completed Transmissions
+        <span class="section-count" id="completed-count">0</span>
+      </div>
+      <div style="overflow-x: auto;">
+        <table class="tx-table" id="completed-table">
+          <thead>
+            <tr>
+              <th>TG</th>
+              <th>Duration</th>
+              <th>Frames</th>
+              <th>Gaps</th>
+              <th>Client (min/avg/max)</th>
+              <th>Server (min/avg/max)</th>
+              <th>Network (min/avg/max)</th>
+              <th>Jitter Plot</th>
+            </tr>
+          </thead>
+          <tbody id="completed-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="theme-engine.js?v=2"></script>
+  <script>
+  (function() {
+    'use strict';
+
+    var DEBUG_REPORT_URL = 'https://case.luxprimatech.com/debug/report';
+
+    var engine = null;
+    var connectedAt = null;
+    var totalFrames = 0;
+    var totalGaps = 0;
+    var totalTxCompleted = 0;
+    var activeCards = {};   // key -> { card, canvas, ctx, deltas, tx }
+    var completedRows = []; // completed transmissions
+
+    // ── DOM refs ──────────────────────────────────
+    var cardConn = document.getElementById('card-conn');
+    var cardUptime = document.getElementById('card-uptime');
+    var cardFrames = document.getElementById('card-frames');
+    var cardGaps = document.getElementById('card-gaps');
+    var cardTxcount = document.getElementById('card-txcount');
+    var cardJitter = document.getElementById('card-jitter');
+    var wsDot = document.getElementById('ws-dot');
+    var wsStatus = document.getElementById('ws-status');
+    var activeList = document.getElementById('active-list');
+    var activeEmpty = document.getElementById('active-empty');
+    var activeCount = document.getElementById('active-count');
+    var completedBody = document.getElementById('completed-body');
+    var completedCount = document.getElementById('completed-count');
+    var btnReport = document.getElementById('btn-report');
+    var btnClear = document.getElementById('btn-clear');
+    var reportStatus = document.getElementById('report-status');
+
+    // ── Format helpers ────────────────────────────
+    function fmtMs(v) {
+      if (v === undefined || v === null || !isFinite(v)) return '--';
+      return v.toFixed(1);
+    }
+
+    function fmtDuration(ms) {
+      if (!ms) return '0.0s';
+      return (ms / 1000).toFixed(1) + 's';
+    }
+
+    function jitterClass(avgMs) {
+      if (avgMs <= 30) return 'good';
+      if (avgMs <= 60) return 'warn';
+      return 'bad';
+    }
+
+    function uptimeStr() {
+      if (!connectedAt) return '--';
+      var s = Math.floor((performance.now() - connectedAt) / 1000);
+      if (s < 60) return s + 's';
+      if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+      return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+    }
+
+    // ── Jitter chart drawing ──────────────────────
+    function drawJitterChart(canvas, deltas, isActive) {
+      var ctx = canvas.getContext('2d');
+      var dpr = window.devicePixelRatio || 1;
+
+      // Handle hi-DPI
+      if (canvas._dprSet !== dpr) {
+        var rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+        ctx.scale(dpr, dpr);
+        canvas._dprSet = dpr;
+        canvas._cssW = rect.width;
+        canvas._cssH = rect.height;
+      }
+      var w = canvas._cssW || canvas.width / dpr;
+      var h = canvas._cssH || canvas.height / dpr;
+
+      ctx.clearRect(0, 0, w, h);
+
+      if (!deltas || deltas.length < 2) return;
+
+      // Reference line at expected delta (~20ms)
+      var refY = h - (20 / 150) * h;
+      var styles = getComputedStyle(document.documentElement);
+      var mutedColor = styles.getPropertyValue('--text-faint').trim() || '#555';
+      var successColor = styles.getPropertyValue('--success').trim() || '#0f0';
+      var warningColor = styles.getPropertyValue('--warning').trim() || '#ff0';
+      var dangerColor = styles.getPropertyValue('--danger').trim() || '#f00';
+
+      ctx.strokeStyle = mutedColor;
+      ctx.lineWidth = 0.5;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(0, refY);
+      ctx.lineTo(w, refY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Plot points
+      var xStep = w / Math.max(deltas.length - 1, 1);
+      var yMax = 150; // ms scale
+
+      for (var i = 0; i < deltas.length; i++) {
+        var d = deltas[i].clientDelta;
+        var x = i * xStep;
+        var y = h - Math.min(d / yMax, 1) * h;
+
+        var color = successColor;
+        if (d > 60) color = dangerColor;
+        else if (d > 30) color = warningColor;
+
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.8;
+        ctx.beginPath();
+        ctx.arc(x, y, 1.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      // Label
+      ctx.fillStyle = mutedColor;
+      ctx.font = '9px monospace';
+      ctx.fillText('20ms', 2, refY - 3);
+      ctx.fillText('150ms', 2, 10);
+
+      if (isActive) {
+        var accentColor = styles.getPropertyValue('--accent').trim() || '#0ff';
+        ctx.fillStyle = accentColor;
+        ctx.globalAlpha = 0.6;
+        ctx.fillText('LIVE', w - 24, 10);
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // ── Sparkline for completed row ───────────────
+    function drawSparkline(canvas, deltas) {
+      var ctx = canvas.getContext('2d');
+      var dpr = window.devicePixelRatio || 1;
+      var rect = canvas.getBoundingClientRect();
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      ctx.scale(dpr, dpr);
+      var w = rect.width;
+      var h = rect.height;
+
+      if (!deltas || deltas.length < 2) return;
+
+      var styles = getComputedStyle(document.documentElement);
+      var successColor = styles.getPropertyValue('--success').trim() || '#0f0';
+      var warningColor = styles.getPropertyValue('--warning').trim() || '#ff0';
+      var dangerColor = styles.getPropertyValue('--danger').trim() || '#f00';
+
+      var xStep = w / Math.max(deltas.length - 1, 1);
+      var yMax = 150;
+
+      for (var i = 0; i < deltas.length; i++) {
+        var d = deltas[i].clientDelta;
+        var x = i * xStep;
+        var y = h - Math.min(d / yMax, 1) * h;
+
+        var color = successColor;
+        if (d > 60) color = dangerColor;
+        else if (d > 30) color = warningColor;
+
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.7;
+        ctx.beginPath();
+        ctx.arc(x, y, 1, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // ── Create active transmission card ───────────
+    function createActiveCard(tx) {
+      var card = document.createElement('div');
+      card.className = 'tx-card active';
+
+      var header = document.createElement('div');
+      header.className = 'tx-header';
+
+      var tgEl = document.createElement('span');
+      tgEl.className = 'tx-tg';
+      tgEl.textContent = 'TG ' + tx.tgid;
+
+      var metaEl = document.createElement('span');
+      metaEl.className = 'tx-meta';
+      metaEl.textContent = 'sys:' + tx.systemId + ' | 0 frames';
+
+      var clientStat = document.createElement('span');
+      clientStat.className = 'tx-stat';
+      var cLabel = document.createElement('span');
+      cLabel.className = 'tx-stat-label';
+      cLabel.textContent = 'client:';
+      var cVal = document.createElement('span');
+      cVal.className = 'tx-stat-val';
+      cVal.textContent = '--/--/--';
+      clientStat.appendChild(cLabel);
+      clientStat.appendChild(cVal);
+
+      var serverStat = document.createElement('span');
+      serverStat.className = 'tx-stat';
+      var sLabel = document.createElement('span');
+      sLabel.className = 'tx-stat-label';
+      sLabel.textContent = 'server:';
+      var sVal = document.createElement('span');
+      sVal.className = 'tx-stat-val';
+      sVal.textContent = '--/--/--';
+      serverStat.appendChild(sLabel);
+      serverStat.appendChild(sVal);
+
+      var netStat = document.createElement('span');
+      netStat.className = 'tx-stat';
+      var nLabel = document.createElement('span');
+      nLabel.className = 'tx-stat-label';
+      nLabel.textContent = 'net:';
+      var nVal = document.createElement('span');
+      nVal.className = 'tx-stat-val';
+      nVal.textContent = '--/--/--';
+      netStat.appendChild(nLabel);
+      netStat.appendChild(nVal);
+
+      header.appendChild(tgEl);
+      header.appendChild(metaEl);
+      header.appendChild(clientStat);
+      header.appendChild(serverStat);
+      header.appendChild(netStat);
+
+      var chartWrap = document.createElement('div');
+      chartWrap.className = 'tx-chart-wrap';
+      var canvas = document.createElement('canvas');
+      canvas.className = 'tx-chart';
+      chartWrap.appendChild(canvas);
+
+      card.appendChild(header);
+      card.appendChild(chartWrap);
+
+      activeList.insertBefore(card, activeList.firstChild);
+      activeEmpty.style.display = 'none';
+
+      return {
+        card: card,
+        canvas: canvas,
+        ctx: canvas.getContext('2d'),
+        metaEl: metaEl,
+        cVal: cVal,
+        sVal: sVal,
+        nVal: nVal,
+        deltas: [],
+        tx: tx
+      };
+    }
+
+    // ── Update active card with new sample ────────
+    function updateActiveCard(info, sample, tx) {
+      info.deltas.push(sample);
+
+      var stats = engine.getJitterStats()[tx.key];
+      if (stats) {
+        var cs = stats.client;
+        var ss = stats.server;
+        var ns = stats.network;
+
+        info.cVal.textContent = fmtMs(cs.min) + '/' + fmtMs(cs.mean) + '/' + fmtMs(cs.max);
+        info.cVal.className = 'tx-stat-val ' + jitterClass(cs.mean);
+
+        info.sVal.textContent = fmtMs(ss.min) + '/' + fmtMs(ss.mean) + '/' + fmtMs(ss.max);
+        info.sVal.className = 'tx-stat-val ' + jitterClass(ss.mean);
+
+        info.nVal.textContent = fmtMs(ns.min) + '/' + fmtMs(ns.mean) + '/' + fmtMs(ns.max);
+        info.nVal.className = 'tx-stat-val';
+      }
+
+      var elapsed = fmtDuration(performance.now() - tx.startTime);
+      info.metaEl.textContent = 'sys:' + tx.systemId + ' | ' + tx.frameCount + ' frames | ' + elapsed;
+
+      // Redraw chart (throttle to ~10fps)
+      if (!info._lastDraw || performance.now() - info._lastDraw > 100) {
+        drawJitterChart(info.canvas, info.deltas, true);
+        info._lastDraw = performance.now();
+      }
+    }
+
+    // ── Move transmission to completed table ──────
+    function addCompletedRow(tx) {
+      totalTxCompleted++;
+
+      var cs = tx.clientStats || {};
+      var ss = tx.serverStats || {};
+      var ns = tx.networkStats || {};
+
+      var row = document.createElement('tr');
+
+      var tdTg = document.createElement('td');
+      tdTg.textContent = tx.tgid + ' (sys:' + tx.systemId + ')';
+      row.appendChild(tdTg);
+
+      var tdDur = document.createElement('td');
+      tdDur.textContent = fmtDuration(tx.duration);
+      row.appendChild(tdDur);
+
+      var tdFrames = document.createElement('td');
+      tdFrames.textContent = tx.frameCount;
+      row.appendChild(tdFrames);
+
+      var tdGaps = document.createElement('td');
+      tdGaps.textContent = tx.seqGaps;
+      if (tx.seqGaps > 0) tdGaps.style.color = 'var(--danger)';
+      row.appendChild(tdGaps);
+
+      var tdClient = document.createElement('td');
+      tdClient.textContent = fmtMs(cs.min) + ' / ' + fmtMs(cs.mean) + ' / ' + fmtMs(cs.max);
+      row.appendChild(tdClient);
+
+      var tdServer = document.createElement('td');
+      tdServer.textContent = fmtMs(ss.min) + ' / ' + fmtMs(ss.mean) + ' / ' + fmtMs(ss.max);
+      row.appendChild(tdServer);
+
+      var tdNet = document.createElement('td');
+      tdNet.textContent = fmtMs(ns.min) + ' / ' + fmtMs(ns.mean) + ' / ' + fmtMs(ns.max);
+      row.appendChild(tdNet);
+
+      var tdSpark = document.createElement('td');
+      tdSpark.className = 'sparkline-cell';
+      var sparkCanvas = document.createElement('canvas');
+      sparkCanvas.className = 'sparkline';
+      tdSpark.appendChild(sparkCanvas);
+      row.appendChild(tdSpark);
+
+      // Insert at top
+      if (completedBody.firstChild) {
+        completedBody.insertBefore(row, completedBody.firstChild);
+      } else {
+        completedBody.appendChild(row);
+      }
+
+      // Draw sparkline after DOM insertion
+      requestAnimationFrame(function() {
+        drawSparkline(sparkCanvas, tx.deltas);
+      });
+
+      completedRows.unshift({ tx: tx, row: row });
+
+      // Keep last 200 rows
+      while (completedRows.length > 200) {
+        var old = completedRows.pop();
+        if (old.row.parentNode) old.row.parentNode.removeChild(old.row);
+      }
+    }
+
+    // ── Update summary cards ──────────────────────
+    function updateSummary() {
+      cardUptime.textContent = uptimeStr();
+
+      var jitterStats = engine ? engine.getJitterStats() : {};
+      var totalMean = 0;
+      var meanCount = 0;
+      var keys = Object.keys(jitterStats);
+      for (var i = 0; i < keys.length; i++) {
+        var s = jitterStats[keys[i]];
+        if (s.client.count > 0) {
+          totalMean += s.client.mean;
+          meanCount++;
+        }
+      }
+      if (meanCount > 0) {
+        var avg = totalMean / meanCount;
+        cardJitter.textContent = fmtMs(avg) + 'ms';
+        cardJitter.className = 'stat-card-value ' + jitterClass(avg);
+      }
+
+      cardFrames.textContent = totalFrames;
+      cardGaps.textContent = totalGaps;
+      cardGaps.className = 'stat-card-value ' + (totalGaps > 0 ? 'bad' : 'good');
+      cardTxcount.textContent = totalTxCompleted;
+      activeCount.textContent = Object.keys(activeCards).length;
+      completedCount.textContent = totalTxCompleted;
+    }
+
+    // ── Send debug report ─────────────────────────
+    function sendReport() {
+      btnReport.disabled = true;
+      reportStatus.textContent = 'Collecting...';
+      reportStatus.className = 'report-status';
+
+      var transmissions = engine ? engine.getTransmissionLog() : [];
+
+      // Fetch server-side jitter stats
+      fetch('/api/v1/audio/jitter')
+        .then(function(r) { return r.ok ? r.json() : {}; })
+        .catch(function() { return {}; })
+        .then(function(serverStats) {
+          var report = {
+            timestamp: new Date().toISOString(),
+            userAgent: navigator.userAgent,
+            connection: navigator.connection ? {
+              type: navigator.connection.type,
+              effectiveType: navigator.connection.effectiveType,
+              downlink: navigator.connection.downlink,
+              rtt: navigator.connection.rtt
+            } : null,
+            audioContext: engine && engine.audioCtx ? {
+              state: engine.audioCtx.state,
+              sampleRate: engine.audioCtx.sampleRate,
+              baseLatency: engine.audioCtx.baseLatency
+            } : null,
+            uptime: connectedAt ? performance.now() - connectedAt : 0,
+            totalFrames: totalFrames,
+            totalGaps: totalGaps,
+            totalTransmissions: totalTxCompleted,
+            clientJitter: engine ? engine.getJitterStats() : {},
+            serverJitter: serverStats,
+            transmissions: transmissions.slice(-50)  // last 50
+          };
+
+          reportStatus.textContent = 'Sending...';
+
+          return fetch(DEBUG_REPORT_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(report)
+          });
+        })
+        .then(function(r) {
+          if (r.ok) {
+            reportStatus.textContent = 'Sent!';
+            reportStatus.className = 'report-status ok';
+          } else {
+            reportStatus.textContent = 'Failed (' + r.status + ')';
+            reportStatus.className = 'report-status err';
+          }
+        })
+        .catch(function(e) {
+          reportStatus.textContent = 'Error: ' + e.message;
+          reportStatus.className = 'report-status err';
+        })
+        .finally(function() {
+          btnReport.disabled = false;
+          setTimeout(function() { reportStatus.textContent = ''; }, 5000);
+        });
+    }
+
+    // ── Clear log ─────────────────────────────────
+    function clearLog() {
+      while (completedBody.firstChild) {
+        completedBody.removeChild(completedBody.firstChild);
+      }
+      completedRows = [];
+      totalTxCompleted = 0;
+      totalFrames = 0;
+      totalGaps = 0;
+      updateSummary();
+    }
+
+    // ── Initialize engine ─────────────────────────
+    function init() {
+      engine = new AudioEngine('/api/v1/audio/live');
+
+      engine.on('status', function(s) {
+        if (s.connected) {
+          wsDot.classList.add('connected');
+          wsStatus.textContent = 'Connected';
+          cardConn.textContent = 'OK';
+          cardConn.className = 'stat-card-value good';
+          if (!connectedAt) connectedAt = performance.now();
+        } else {
+          wsDot.classList.remove('connected');
+          wsStatus.textContent = 'Disconnected';
+          cardConn.textContent = 'DOWN';
+          cardConn.className = 'stat-card-value bad';
+        }
+      });
+
+      engine.on('transmission_start', function(tx) {
+        var info = createActiveCard(tx);
+        activeCards[tx.key] = info;
+        updateSummary();
+      });
+
+      engine.on('jitter_sample', function(ev) {
+        totalFrames++;
+        var info = activeCards[ev.key];
+        if (!info) return;
+
+        // Get the active transmission from the jitter tracking
+        var jStats = engine.getJitterStats();
+        var tgStats = jStats[ev.key];
+        var tx = tgStats ? tgStats.activeTransmission : info.tx;
+        if (tx) {
+          updateActiveCard(info, ev.sample, tx);
+        }
+      });
+
+      engine.on('transmission_end', function(tx) {
+        totalGaps += tx.seqGaps;
+
+        var info = activeCards[tx.key];
+        if (info) {
+          info.card.classList.remove('active');
+          info.card.classList.add('ended');
+          // Final chart draw
+          drawJitterChart(info.canvas, info.deltas, false);
+          // Remove from active after a brief moment
+          setTimeout(function() {
+            if (info.card.parentNode) info.card.parentNode.removeChild(info.card);
+            delete activeCards[tx.key];
+            if (Object.keys(activeCards).length === 0) {
+              activeEmpty.style.display = '';
+            }
+            updateSummary();
+          }, 2000);
+        }
+
+        addCompletedRow(tx);
+        updateSummary();
+      });
+
+      // Subscribe to all audio (diagnostics sees everything)
+      engine.start().then(function() {
+        engine.subscribe({ tgids: [], systems: [] });
+      });
+
+      // Periodic summary update
+      setInterval(updateSummary, 1000);
+
+      // Button handlers
+      btnReport.addEventListener('click', sendReport);
+      btnClear.addEventListener('click', clearLog);
+    }
+
+    // Start
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', init);
+    } else {
+      init();
+    }
+  })();
+  </script>
+</body>
+</html>

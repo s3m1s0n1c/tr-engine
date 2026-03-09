@@ -2155,6 +2155,114 @@ paths:
           $ref: "#/components/responses/InternalError"
 
   # ----------------------------------------------------------
+  # Analytics
+  # ----------------------------------------------------------
+  /analytics/recorder-utilization:
+    get:
+      operationId: getRecorderUtilization
+      summary: Recorder utilization over time
+      description: |
+        Returns recorder state percentages (recording, idle, available, ignore)
+        bucketed by hour or day. Based on the `recorder_snapshots` table which
+        stores one row per recorder per minute.
+      tags: [stats]
+      parameters:
+        - name: bucket
+          in: query
+          description: Time bucket size. Default "hour".
+          schema:
+            type: string
+            enum: [hour, day]
+            default: hour
+        - name: days
+          in: query
+          description: Lookback period in days (1–90). Default 7.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 90
+            default: 7
+        - name: src_num
+          in: query
+          description: Filter to a specific SDR device number.
+          schema:
+            type: integer
+        - name: instance_id
+          in: query
+          description: Filter to a specific trunk-recorder instance.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [buckets, total]
+                properties:
+                  buckets:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RecorderUtilizationBucket"
+                  total:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /analytics/decode-rates:
+    get:
+      operationId: getDecodeRateBuckets
+      summary: Decode rates over time (bucketed)
+      description: |
+        Returns decode rates aggregated into time buckets with avg/min/max.
+        Useful for showing control channel health trends. For raw decode rate
+        points, use GET /stats/rates instead.
+      tags: [stats]
+      parameters:
+        - name: bucket
+          in: query
+          description: Time bucket size. Default "hour".
+          schema:
+            type: string
+            enum: [hour, day]
+            default: hour
+        - name: days
+          in: query
+          description: Lookback period in days (1–90). Default 7.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 90
+            default: 7
+        - name: system_id
+          in: query
+          description: Filter by system ID(s), comma-separated.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [buckets, total]
+                properties:
+                  buckets:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DecodeRateBucket"
+                  total:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ----------------------------------------------------------
   # Recorders
   # ----------------------------------------------------------
   /recorders:
@@ -2476,6 +2584,41 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           description: Maximum audio stream clients reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ----------------------------------------------------------
+  # Audio Jitter Stats
+  # ----------------------------------------------------------
+  /audio/jitter:
+    get:
+      operationId: getAudioJitter
+      summary: Get audio jitter stats
+      description: |
+        Returns per-stream inter-packet arrival jitter statistics for all
+        active audio streams. Jitter is measured using Welford's online
+        algorithm on inter-chunk arrival deltas at the server's UDP receive
+        layer.
+
+        > **Note:** This feature is only available when `STREAM_LISTEN` is
+        > configured. Returns 404 when not enabled.
+      tags: [Audio]
+      responses:
+        "200":
+          description: Per-stream jitter statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  streams:
+                    type: object
+                    additionalProperties:
+                      $ref: "#/components/schemas/StreamJitterSnapshot"
+        "404":
+          description: Live audio streaming is not enabled
           content:
             application/json:
               schema:
@@ -4958,6 +5101,64 @@ components:
           type: integer
           example: 15
 
+    RecorderUtilizationBucket:
+      type: object
+      properties:
+        time:
+          type: string
+          format: date-time
+        src_num:
+          type: integer
+          description: SDR device number
+        pct_recording:
+          type: number
+          description: Percentage of time in RECORDING state
+          example: 3.2
+        pct_idle:
+          type: number
+          description: Percentage of time in IDLE state
+          example: 4.8
+        pct_available:
+          type: number
+          description: Percentage of time in AVAILABLE state
+          example: 92.0
+        pct_ignore:
+          type: number
+          description: Percentage of time in IGNORE state
+          example: 0.0
+        sample_count:
+          type: integer
+          description: Number of snapshot samples in this bucket
+          example: 58
+
+    DecodeRateBucket:
+      type: object
+      properties:
+        time:
+          type: string
+          format: date-time
+        system_id:
+          type: integer
+          example: 1
+        system_name:
+          type: string
+        avg_rate:
+          type: number
+          description: Average decode rate in this bucket
+          example: 98.5
+        min_rate:
+          type: number
+          description: Minimum decode rate in this bucket
+          example: 85.0
+        max_rate:
+          type: number
+          description: Maximum decode rate in this bucket
+          example: 100.0
+        sample_count:
+          type: integer
+          description: Number of rate samples in this bucket
+          example: 60
+
     EncryptionStatsResponse:
       type: object
       required: [stats, total]
@@ -5412,3 +5613,40 @@ components:
           items:
             $ref: "#/components/schemas/BackfillJob"
           description: Jobs waiting to start, in submission order
+
+    StreamJitterSnapshot:
+      type: object
+      properties:
+        system_id:
+          type: integer
+          description: System ID
+        tgid:
+          type: integer
+          description: Talkgroup ID
+        count:
+          type: integer
+          description: Number of inter-packet deltas recorded
+        min_ms:
+          type: number
+          format: double
+          description: Minimum inter-packet delta in milliseconds
+        max_ms:
+          type: number
+          format: double
+          description: Maximum inter-packet delta in milliseconds
+        mean_ms:
+          type: number
+          format: double
+          description: Mean inter-packet delta in milliseconds
+        stddev_ms:
+          type: number
+          format: double
+          description: Standard deviation of inter-packet deltas in milliseconds
+        last_delta_ms:
+          type: number
+          format: double
+          description: Most recent inter-packet delta in milliseconds
+        started_at:
+          type: string
+          format: date-time
+          description: When this stream became active

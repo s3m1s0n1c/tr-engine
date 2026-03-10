@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -53,12 +54,17 @@ func extractIP(r *http.Request) string {
 	return host
 }
 
+func hashIP(ip string) string {
+	h := sha256.Sum256([]byte(ip))
+	return fmt.Sprintf("%x", h[:4])
+}
+
 func notifyDiscordUpload(ip, filename string, size int64) {
 	if webhookURL == "" {
 		return
 	}
 	sizeMB := float64(size) / (1024 * 1024)
-	msg := fmt.Sprintf("<@139209424953802752> **File uploaded**\nFrom: `%s`\nFile: `%s`\nSize: %.2f MB", ip, filename, sizeMB)
+	msg := fmt.Sprintf("<@139209424953802752> <@1481021387756797972> **File uploaded**\nFrom: `%s`\nFile: `%s`\nSize: %.2f MB", hashIP(ip), filename, sizeMB)
 	payload, _ := json.Marshal(map[string]string{"content": msg})
 	resp, err := http.Post(webhookURL, "application/json", bytes.NewReader(payload))
 	if err != nil {
@@ -78,7 +84,7 @@ func notifyDiscord(ip, filename string, body []byte) {
 	json.Unmarshal(body, &report)
 
 	sizeKB := float64(len(body)) / 1024
-	msg := fmt.Sprintf("<@139209424953802752> **Debug report received**\nFrom: `%s`\nFile: `%s`\nSize: %.1f KB", ip, filename, sizeKB)
+	msg := fmt.Sprintf("<@139209424953802752> <@1481021387756797972> **Debug report received**\nFrom: `%s`\nFile: `%s`\nSize: %.1f KB", hashIP(ip), filename, sizeKB)
 
 	if txCount, ok := report["transmissions"]; ok {
 		if arr, ok := txCount.([]interface{}); ok {

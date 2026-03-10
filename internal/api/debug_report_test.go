@@ -277,7 +277,7 @@ func TestDebugReportSubmitForwards(t *testing.T) {
 
 func TestDebugReportDisabledReturns503(t *testing.T) {
 	cfg := &config.Config{
-		DebugReportURL: "", // disabled
+		DebugReportDisable: true,
 	}
 
 	handler := NewDebugReportHandler(DebugReportOptions{

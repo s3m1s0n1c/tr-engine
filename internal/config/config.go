@@ -131,8 +131,9 @@ type Config struct {
 	// S3 audio storage (optional — local disk used when S3_BUCKET is empty)
 	S3 S3Config
 
-	// Debug report forwarding (empty string disables)
-	DebugReportURL string `env:"DEBUG_REPORT_URL" envDefault:"https://case.luxprimatech.com/debug/report"`
+	// Debug report forwarding
+	DebugReportURL     string `env:"DEBUG_REPORT_URL" envDefault:"https://case.luxprimatech.com/debug/report"`
+	DebugReportDisable bool   `env:"DEBUG_REPORT_DISABLE" envDefault:"false"`
 }
 
 // S3Config holds S3-compatible object storage settings for audio files.

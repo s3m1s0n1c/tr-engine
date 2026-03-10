@@ -89,7 +89,8 @@ func NewServer(opts ServerOptions) *Server {
 	}
 
 	// Debug report endpoint (no auth — consent shown on page)
-	if opts.Config.DebugReportURL != "" {
+	// Always registered; handler returns 503 if disabled via DEBUG_REPORT_DISABLE=true
+	{
 		debugReport := NewDebugReportHandler(DebugReportOptions{
 			DB:           opts.DB,
 			Config:       opts.Config,

@@ -195,6 +195,7 @@ type DebugReportHandler struct {
 	startTime     time.Time
 	mqtt          MQTTStatus
 	forwardURL    string
+	disabled      bool
 	trConfigPath  string
 }
 
@@ -222,6 +223,7 @@ func NewDebugReportHandler(opts DebugReportOptions) *DebugReportHandler {
 		startTime:    opts.StartTime,
 		mqtt:         opts.MQTT,
 		forwardURL:   opts.Config.DebugReportURL,
+		disabled:     opts.Config.DebugReportDisable,
 	}
 	if opts.Config.TRDir != "" {
 		h.trConfigPath = filepath.Join(opts.Config.TRDir, "config.json")
@@ -231,7 +233,7 @@ func NewDebugReportHandler(opts DebugReportOptions) *DebugReportHandler {
 
 // Submit handles POST /api/v1/debug-report.
 func (h *DebugReportHandler) Submit(w http.ResponseWriter, r *http.Request) {
-	if h.forwardURL == "" {
+	if h.disabled || h.forwardURL == "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte(`{"error":"debug reports disabled"}`))

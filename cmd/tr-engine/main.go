@@ -250,6 +250,7 @@ func main() {
 		RetentionCheckpoints:  cfg.RetentionCheckpoints,
 		RetentionStaleCalls:   cfg.RetentionStaleCalls,
 		StreamListen:      cfg.StreamListen,
+		StreamInstanceID:  cfg.StreamInstanceID,
 		StreamIdleTimeout: cfg.StreamIdleTimeout,
 		StreamOpusBitrate: cfg.StreamOpusBitrate,
 		Store:            store,

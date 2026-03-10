@@ -16,7 +16,7 @@ type identityResult struct {
 	siteID   int
 }
 
-func (m *mockIdentityLookup) LookupByShortName(shortName string) (systemID, siteID int, ok bool) {
+func (m *mockIdentityLookup) LookupByShortName(instanceID, shortName string) (systemID, siteID int, ok bool) {
 	r, found := m.systems[shortName]
 	if !found {
 		return 0, 0, false
@@ -43,7 +43,7 @@ func TestRouterResolvesIdentity(t *testing.T) {
 			"butco": {systemID: 1, siteID: 10},
 		},
 	}
-	router := NewAudioRouter(bus, mock, 10*time.Second, 0)
+	router := NewAudioRouter(bus, mock, "", 10*time.Second, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -83,7 +83,7 @@ func TestRouterDropsUnknownSystem(t *testing.T) {
 			"butco": {systemID: 1, siteID: 10},
 		},
 	}
-	router := NewAudioRouter(bus, mock, 10*time.Second, 0)
+	router := NewAudioRouter(bus, mock, "", 10*time.Second, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -110,7 +110,7 @@ func TestRouterDeduplicatesMultiSite(t *testing.T) {
 			"warco": {systemID: 1, siteID: 20},
 		},
 	}
-	router := NewAudioRouter(bus, mock, 10*time.Second, 0)
+	router := NewAudioRouter(bus, mock, "", 10*time.Second, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -166,7 +166,7 @@ func TestRouterIdleStreamRelease(t *testing.T) {
 		},
 	}
 	// Use 100ms idle timeout for fast test
-	router := NewAudioRouter(bus, mock, 100*time.Millisecond, 0)
+	router := NewAudioRouter(bus, mock, "", 100*time.Millisecond, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -220,7 +220,7 @@ func TestRouterTracksJitter(t *testing.T) {
 			"butco": {systemID: 1, siteID: 10},
 		},
 	}
-	router := NewAudioRouter(bus, mock, 10*time.Second, 0)
+	router := NewAudioRouter(bus, mock, "", 10*time.Second, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -266,7 +266,7 @@ func TestRouterActiveStreams(t *testing.T) {
 			"butco": {systemID: 1, siteID: 10},
 		},
 	}
-	router := NewAudioRouter(bus, mock, 10*time.Second, 0)
+	router := NewAudioRouter(bus, mock, "", 10*time.Second, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -291,5 +291,61 @@ func TestRouterActiveStreams(t *testing.T) {
 
 	if n := router.ActiveStreamCount(); n != 1 {
 		t.Errorf("ActiveStreamCount = %d after one TG, want 1", n)
+	}
+}
+
+// instanceScopedLookup implements IdentityLookup with instance-scoped cache keys.
+type instanceScopedLookup struct {
+	entries map[string]identityResult // key: "instanceID:shortName"
+}
+
+func (m *instanceScopedLookup) LookupByShortName(instanceID, shortName string) (systemID, siteID int, ok bool) {
+	if instanceID != "" {
+		r, found := m.entries[instanceID+":"+shortName]
+		if !found {
+			return 0, 0, false
+		}
+		return r.systemID, r.siteID, true
+	}
+	// Fallback: scan all (mirrors IdentityResolver behavior)
+	for _, r := range m.entries {
+		return r.systemID, r.siteID, true
+	}
+	return 0, 0, false
+}
+
+func TestRouterInstanceIDResolvesCorrectSystem(t *testing.T) {
+	bus := NewAudioBus()
+	// Two instances registered the same short_name "conv" but with different system IDs
+	mock := &instanceScopedLookup{
+		entries: map[string]identityResult{
+			"instance-a:conv": {systemID: 2, siteID: 10},
+			"instance-b:conv": {systemID: 5, siteID: 20},
+		},
+	}
+	// Router configured with instance-a — should always resolve to system 2
+	router := NewAudioRouter(bus, mock, "instance-a", 10*time.Second, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go router.Run(ctx)
+
+	ch, unsub := bus.Subscribe(AudioFilter{})
+	defer unsub()
+
+	// Send 10 chunks — all should resolve to system 2 (not randomly to 5)
+	for i := 0; i < 10; i++ {
+		router.Input() <- makeChunk("conv", 3, 100)
+	}
+
+	for i := 0; i < 10; i++ {
+		select {
+		case frame := <-ch:
+			if frame.SystemID != 2 {
+				t.Errorf("frame %d: SystemID = %d, want 2 (instance-a)", i, frame.SystemID)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for frame %d", i)
+		}
 	}
 }

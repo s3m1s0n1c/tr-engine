@@ -147,11 +147,23 @@ func (r *IdentityResolver) GetSystemIDForSysName(sysName string) int {
 	return 0
 }
 
-// LookupByShortName finds a system/site by TR short_name. Returns the first match.
-// This is used by the live audio router to resolve simplestream's short_name field.
-func (ir *IdentityResolver) LookupByShortName(shortName string) (systemID, siteID int, ok bool) {
+// LookupByShortName finds a system/site by TR short_name. When instanceID is
+// non-empty, performs a direct cache key lookup (deterministic, O(1)). When
+// empty, falls back to scanning all entries and returning the first match
+// (non-deterministic when multiple instances share a short_name).
+func (ir *IdentityResolver) LookupByShortName(instanceID, shortName string) (systemID, siteID int, ok bool) {
 	ir.mu.RLock()
 	defer ir.mu.RUnlock()
+
+	if instanceID != "" {
+		key := instanceID + ":" + shortName
+		if ri, found := ir.cache[key]; found {
+			return ri.SystemID, ri.SiteID, true
+		}
+		return 0, 0, false
+	}
+
+	// Fallback: scan all entries (legacy, non-deterministic for duplicates)
 	for _, ri := range ir.cache {
 		if ri.SystemName == shortName {
 			return ri.SystemID, ri.SiteID, true

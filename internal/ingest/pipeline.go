@@ -140,6 +140,7 @@ type PipelineOptions struct {
 	RetentionStaleCalls   time.Duration
 	// Live audio streaming
 	StreamListen      string
+	StreamInstanceID  string        // TR instance ID for simplestream identity resolution
 	StreamIdleTimeout time.Duration
 	StreamOpusBitrate int // 0 = PCM passthrough, >0 = Opus bitrate in bps
 	Log               zerolog.Logger
@@ -208,7 +209,7 @@ func NewPipeline(opts PipelineOptions) *Pipeline {
 	var audioRouter *audio.AudioRouter
 	if opts.StreamListen != "" {
 		audioBus = audio.NewAudioBus()
-		audioRouter = audio.NewAudioRouter(audioBus, identity, opts.StreamIdleTimeout, opts.StreamOpusBitrate)
+		audioRouter = audio.NewAudioRouter(audioBus, identity, opts.StreamInstanceID, opts.StreamIdleTimeout, opts.StreamOpusBitrate)
 		audioRouter.SetLogger(log)
 		log.Info().Msg("live audio streaming infrastructure initialized")
 	}

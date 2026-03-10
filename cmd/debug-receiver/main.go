@@ -21,7 +21,7 @@ var (
 	uploadDir      = "/data/tr-engine/debug-uploads"
 	listenAddr     = ":8090"
 	webhookURL     = ""
-	maxBody        = int64(10 << 20)      // 10 MB for JSON reports
+	maxBody        = int64(50 << 20)      // 50 MB for JSON reports
 	maxUpload      = int64(50 << 20)      // 50 MB for file uploads
 )
 

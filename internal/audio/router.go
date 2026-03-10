@@ -10,8 +10,11 @@ import (
 )
 
 // IdentityLookup resolves a trunk-recorder short name to system and site IDs.
+// instanceID scopes the lookup to a specific TR instance (direct cache key lookup);
+// when empty, falls back to scanning all entries (non-deterministic for conventional
+// systems with duplicate short names across instances).
 type IdentityLookup interface {
-	LookupByShortName(shortName string) (systemID, siteID int, ok bool)
+	LookupByShortName(instanceID, shortName string) (systemID, siteID int, ok bool)
 }
 
 // activeStream tracks a live audio stream for a specific talkgroup.
@@ -43,6 +46,7 @@ type StreamJitterSnapshot struct {
 type AudioRouter struct {
 	bus          *AudioBus
 	identity     IdentityLookup
+	instanceID   string        // TR instance ID for scoped identity lookups
 	idleTimeout  time.Duration
 	opusBitrate  int // 0 = PCM passthrough, >0 = Opus requested (falls back to PCM if unavailable)
 	log          zerolog.Logger
@@ -63,10 +67,11 @@ func (r *AudioRouter) SetLogger(l zerolog.Logger) {
 	r.log = l.With().Str("component", "audio_router").Logger()
 }
 
-func NewAudioRouter(bus *AudioBus, identity IdentityLookup, idleTimeout time.Duration, opusBitrate int) *AudioRouter {
+func NewAudioRouter(bus *AudioBus, identity IdentityLookup, instanceID string, idleTimeout time.Duration, opusBitrate int) *AudioRouter {
 	return &AudioRouter{
 		bus:           bus,
 		identity:      identity,
+		instanceID:    instanceID,
 		idleTimeout:   idleTimeout,
 		opusBitrate:   opusBitrate,
 		log:           zerolog.Nop(),
@@ -115,7 +120,7 @@ func (r *AudioRouter) processChunk(chunk AudioChunk) {
 	// Resolve identity from short name if system ID is not already set.
 	if systemID == 0 && chunk.ShortName != "" {
 		var ok bool
-		systemID, siteID, ok = r.identity.LookupByShortName(chunk.ShortName)
+		systemID, siteID, ok = r.identity.LookupByShortName(r.instanceID, chunk.ShortName)
 		if !ok {
 			r.log.Debug().
 				Str("short_name", chunk.ShortName).

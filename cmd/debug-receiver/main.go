@@ -98,6 +98,18 @@ func notifyDiscord(ip, filename string, body []byte) {
 	resp.Body.Close()
 }
 
+func writeGzipped(path string, data []byte) error {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(data); err != nil {
+		return err
+	}
+	if err := gz.Close(); err != nil {
+		return err
+	}
+	return os.WriteFile(path, buf.Bytes(), 0644)
+}
+
 func main() {
 	if dir := os.Getenv("DEBUG_REPORT_DIR"); dir != "" {
 		outputDir = dir
@@ -125,7 +137,7 @@ func main() {
 		// CORS
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Encoding")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -137,41 +149,106 @@ func main() {
 		}
 
 		ip := extractIP(r)
+		ts := time.Now().UTC().Format("2006-01-02T15-04-05")
+		baseName := fmt.Sprintf("%s_%s", ts, strings.ReplaceAll(ip, ":", "-"))
 
-		var reader io.Reader = io.LimitReader(r.Body, maxBody)
-		if r.Header.Get("Content-Encoding") == "gzip" {
-			gz, err := gzip.NewReader(reader)
-			if err != nil {
-				http.Error(w, "invalid gzip", http.StatusBadRequest)
+		ct := r.Header.Get("Content-Type")
+		isMultipart := strings.HasPrefix(ct, "multipart/")
+
+		if isMultipart {
+			// Multipart: report.json + audio_N.pcm files
+			r.Body = http.MaxBytesReader(w, r.Body, maxUpload)
+			if err := r.ParseMultipartForm(maxUpload); err != nil {
+				http.Error(w, "multipart parse error", http.StatusBadRequest)
 				return
 			}
-			defer gz.Close()
-			reader = gz
+
+			var body []byte
+			var audioFiles []string
+
+			for fieldName, headers := range r.MultipartForm.File {
+				for _, fh := range headers {
+					src, err := fh.Open()
+					if err != nil {
+						continue
+					}
+					data, err := io.ReadAll(src)
+					src.Close()
+					if err != nil {
+						continue
+					}
+
+					if fieldName == "report" {
+						body = data
+					} else {
+						// Audio file — save alongside report
+						audioName := fmt.Sprintf("%s_%s", baseName, filepath.Base(fh.Filename))
+						audioPath := filepath.Join(outputDir, audioName)
+						if err := os.WriteFile(audioPath, data, 0644); err != nil {
+							log.Printf("failed to write audio %s: %v", audioName, err)
+							continue
+						}
+						audioFiles = append(audioFiles, audioName)
+						log.Printf("saved audio from %s → %s (%d bytes)", ip, audioName, len(data))
+					}
+				}
+			}
+
+			if body == nil {
+				http.Error(w, "missing report field", http.StatusBadRequest)
+				return
+			}
+			if !json.Valid(body) {
+				http.Error(w, "invalid JSON in report", http.StatusBadRequest)
+				return
+			}
+
+			filename := baseName + ".json.gz"
+			path := filepath.Join(outputDir, filename)
+			if err := writeGzipped(path, body); err != nil {
+				log.Printf("failed to write report: %v", err)
+				http.Error(w, "write error", http.StatusInternalServerError)
+				return
+			}
+
+			log.Printf("saved report from %s → %s (%d bytes raw, %d audio files)", ip, filename, len(body), len(audioFiles))
+			go notifyDiscord(ip, filename, body)
+
+		} else {
+			// Legacy JSON body (with optional gzip)
+			var reader io.Reader = io.LimitReader(r.Body, maxBody)
+			if r.Header.Get("Content-Encoding") == "gzip" {
+				gz, err := gzip.NewReader(reader)
+				if err != nil {
+					http.Error(w, "invalid gzip", http.StatusBadRequest)
+					return
+				}
+				defer gz.Close()
+				reader = gz
+			}
+
+			body, err := io.ReadAll(reader)
+			if err != nil {
+				http.Error(w, "read error", http.StatusBadRequest)
+				return
+			}
+			if !json.Valid(body) {
+				http.Error(w, "invalid JSON", http.StatusBadRequest)
+				return
+			}
+
+			filename := baseName + ".json.gz"
+			path := filepath.Join(outputDir, filename)
+			if err := writeGzipped(path, body); err != nil {
+				log.Printf("failed to write report: %v", err)
+				http.Error(w, "write error", http.StatusInternalServerError)
+				return
+			}
+
+			log.Printf("saved report from %s → %s (%d bytes raw)", ip, filename, len(body))
+			go notifyDiscord(ip, filename, body)
 		}
 
-		body, err := io.ReadAll(reader)
-		if err != nil {
-			http.Error(w, "read error", http.StatusBadRequest)
-			return
-		}
-
-		if !json.Valid(body) {
-			http.Error(w, "invalid JSON", http.StatusBadRequest)
-			return
-		}
-
-		ts := time.Now().UTC().Format("2006-01-02T15-04-05")
-		filename := fmt.Sprintf("%s_%s.json", ts, strings.ReplaceAll(ip, ":", "-"))
-		path := filepath.Join(outputDir, filename)
-
-		if err := os.WriteFile(path, body, 0644); err != nil {
-			log.Printf("failed to write report: %v", err)
-			http.Error(w, "write error", http.StatusInternalServerError)
-			return
-		}
-
-		log.Printf("saved report from %s → %s (%d bytes)", ip, filename, len(body))
-		go notifyDiscord(ip, filename, body)
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"ok":true}`))
 	})
@@ -179,7 +256,7 @@ func main() {
 	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Encoding")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

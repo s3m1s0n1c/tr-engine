@@ -392,6 +392,7 @@
     var totalGaps = 0;
     var totalTxCompleted = 0;
     var activeCards = {};   // key -> { card, canvas, ctx, deltas, tx }
+    var fadingCards = {};   // key -> card DOM element (in 2s fade-out)
     var completedRows = []; // completed transmissions
     var totalUnderruns = 0;
 
@@ -399,6 +400,7 @@
     var reportPending = false;
     var reportClickTime = 0;
     var reportTrackedKeys = null; // Set of active tx keys at report click time
+    var reportPollTimer = null;
 
     // ── DOM refs ──────────────────────────────────
     var startOverlay = document.getElementById('start-overlay');
@@ -760,6 +762,20 @@
       completedCount.textContent = totalTxCompleted;
     }
 
+    // ── Audio merge helper ─────────────────────────
+    function mergeAudioChunks(tx) {
+      if (!tx.audioChunks || tx.audioChunks.length === 0) return null;
+      var totalLen = 0;
+      for (var i = 0; i < tx.audioChunks.length; i++) totalLen += tx.audioChunks[i].length;
+      var merged = new Int16Array(totalLen);
+      var offset = 0;
+      for (var i = 0; i < tx.audioChunks.length; i++) {
+        merged.set(tx.audioChunks[i], offset);
+        offset += tx.audioChunks[i].length;
+      }
+      return merged;
+    }
+
     // ── Gzip compression helper ───────────────────
     function gzipCompress(data) {
       if (typeof CompressionStream === 'undefined') {
@@ -781,32 +797,52 @@
       reportPending = true;
       reportClickTime = performance.now();
       btnReport.disabled = true;
+      reportStatus.textContent = 'Waiting for active transmissions to finish...';
+      reportStatus.className = 'report-status pending';
 
-      // Snapshot currently active transmission keys
-      var activeKeys = Object.keys(activeCards);
-      if (activeKeys.length === 0) {
-        // No active transmissions — submit immediately
+      // Snapshot keys that are actively transmitting right now.
+      // Only wait for these — ignore new transmissions that start after click.
+      var trackedKeys = new Set();
+      if (engine) {
+        engine._jitterTracking.forEach(function(entry, key) {
+          if (entry.transmission) trackedKeys.add(key);
+        });
+      }
+      if (trackedKeys.size === 0) {
         reportStatus.textContent = 'Building report...';
         reportStatus.className = 'report-status pending';
         submitReport();
         return;
       }
 
-      reportTrackedKeys = new Set(activeKeys);
-      reportStatus.textContent = 'Waiting for ' + activeKeys.length + ' transmission(s) to end...';
-      reportStatus.className = 'report-status pending';
+      var gapThreshold = 1000;
+      var reportDeadline = performance.now() + 10000;
+      reportPollTimer = setInterval(function() {
+        var now = performance.now();
+        var timedOut = now >= reportDeadline;
+        var stillActive = 0;
+        if (!timedOut && engine) {
+          trackedKeys.forEach(function(key) {
+            var entry = engine._jitterTracking.get(key);
+            if (entry && entry.transmission && (now - entry.prevClientTime) < gapThreshold) {
+              stillActive++;
+            }
+          });
+        }
+        if (stillActive > 0 && !timedOut) {
+          var secsLeft = Math.ceil((reportDeadline - now) / 1000);
+          reportStatus.textContent = 'Waiting for ' + stillActive + ' transmission(s) to finish (' + secsLeft + 's)...';
+        } else {
+          clearInterval(reportPollTimer);
+          reportPollTimer = null;
+          reportStatus.textContent = 'Building report...';
+          submitReport();
+        }
+      }, 300);
     }
 
-    function checkReportReady(endedKey) {
-      if (!reportPending || !reportTrackedKeys) return;
-      reportTrackedKeys.delete(endedKey);
-      if (reportTrackedKeys.size > 0) {
-        reportStatus.textContent = 'Waiting for ' + reportTrackedKeys.size + ' transmission(s) to end...';
-        return;
-      }
-      // All tracked transmissions ended
-      reportStatus.textContent = 'Building report...';
-      submitReport();
+    function checkReportReady() {
+      // no longer used — polling handles this
     }
 
     function submitReport() {
@@ -825,6 +861,28 @@
         .then(function(r) { return r.ok ? r.json() : {}; })
         .catch(function() { return {}; })
         .then(function(serverStats) {
+          var txSlice = transmissions.slice(-50);
+          var formData = new FormData();
+          var audioCount = 0;
+
+          var reportTxs = txSlice.map(function(tx, i) {
+            var t = {
+              key: tx.key, tgid: tx.tgid, systemId: tx.systemId,
+              startTime: tx.startTime, endTime: tx.endTime, duration: tx.duration,
+              frameCount: tx.frameCount, seqGaps: tx.seqGaps,
+              deltas: tx.deltas,
+              clientStats: tx.clientStats, serverStats: tx.serverStats, networkStats: tx.networkStats
+            };
+            var merged = mergeAudioChunks(tx);
+            if (merged) {
+              var filename = 'audio_' + i + '.pcm';
+              formData.append(filename, new Blob([merged.buffer], { type: 'application/octet-stream' }), filename);
+              t.audio = { file: filename, sampleRate: tx.audioSampleRate || 8000, samples: merged.length };
+              audioCount++;
+            }
+            return t;
+          });
+
           var report = {
             timestamp: new Date().toISOString(),
             reportClickTime: reportClickTime,
@@ -848,26 +906,15 @@
             clientJitter: engine ? engine.getJitterStats() : {},
             serverJitter: serverStats,
             bufferStats: engine ? engine.getBufferStats() : {},
-            transmissions: transmissions.slice(-50)
+            transmissions: reportTxs
           };
 
-          var json = JSON.stringify(report);
-          reportStatus.textContent = 'Compressing (' + Math.round(json.length / 1024) + ' KB)...';
+          formData.append('report', new Blob([JSON.stringify(report)], { type: 'application/json' }), 'report.json');
+          reportStatus.textContent = 'Sending (' + audioCount + ' audio files)...';
 
-          return gzipCompress(json).then(function(result) {
-            var headers = { 'Content-Type': 'application/json' };
-            var body = result.data;
-            if (result.compressed) {
-              headers['Content-Encoding'] = 'gzip';
-            }
-
-            reportStatus.textContent = 'Sending' + (result.compressed ? ' (' + Math.round(body.byteLength / 1024) + ' KB gzipped)' : '') + '...';
-
-            return fetch(DEBUG_REPORT_URL, {
-              method: 'POST',
-              headers: headers,
-              body: body
-            });
+          return fetch(DEBUG_REPORT_URL, {
+            method: 'POST',
+            body: formData
           });
         })
         .then(function(r) {
@@ -885,7 +932,7 @@
         })
         .finally(function() {
           reportPending = false;
-          reportTrackedKeys = null;
+          if (reportPollTimer) { clearInterval(reportPollTimer); reportPollTimer = null; }
           btnReport.disabled = false;
           setTimeout(function() { reportStatus.textContent = ''; reportStatus.className = 'report-status'; }, 8000);
         });
@@ -893,11 +940,23 @@
 
     // ── Clear log ─────────────────────────────────
     function clearLog() {
+      // Clear completed table
       while (completedBody.firstChild) completedBody.removeChild(completedBody.firstChild);
       completedRows = [];
+      // Clear active and fading cards
+      Object.keys(activeCards).forEach(function(k) {
+        if (activeCards[k].card.parentNode) activeCards[k].card.parentNode.removeChild(activeCards[k].card);
+      });
+      activeCards = {};
+      Object.keys(fadingCards).forEach(function(k) {
+        if (fadingCards[k].parentNode) fadingCards[k].parentNode.removeChild(fadingCards[k]);
+      });
+      fadingCards = {};
+      activeEmpty.style.display = '';
       totalTxCompleted = 0;
       totalFrames = 0;
       totalGaps = 0;
+      totalUnderruns = 0;
       updateSummary();
     }
 
@@ -929,6 +988,11 @@
       });
 
       engine.on('transmission_start', function(tx) {
+        // Remove any fading-out card for the same key
+        if (fadingCards[tx.key]) {
+          if (fadingCards[tx.key].parentNode) fadingCards[tx.key].parentNode.removeChild(fadingCards[tx.key]);
+          delete fadingCards[tx.key];
+        }
         var info = createActiveCard(tx);
         activeCards[tx.key] = info;
         updateSummary();
@@ -948,17 +1012,24 @@
         totalGaps += tx.seqGaps;
 
         var info = activeCards[tx.key];
+        delete activeCards[tx.key]; // remove immediately so report tracking works
         if (info) {
           info.card.classList.remove('active');
           info.card.classList.add('ended');
           drawJitterChart(info.canvas, info.deltas, false);
-          setTimeout(function() {
-            if (info.card.parentNode) info.card.parentNode.removeChild(info.card);
-            delete activeCards[tx.key];
-            if (Object.keys(activeCards).length === 0) activeEmpty.style.display = '';
-            updateSummary();
-          }, 2000);
+          fadingCards[tx.key] = info.card;
+          (function(k) {
+            setTimeout(function() {
+              if (fadingCards[k] === info.card) {
+                if (info.card.parentNode) info.card.parentNode.removeChild(info.card);
+                delete fadingCards[k];
+              }
+              if (Object.keys(activeCards).length === 0 && Object.keys(fadingCards).length === 0) activeEmpty.style.display = '';
+              updateSummary();
+            }, 2000);
+          })(tx.key);
         }
+        if (Object.keys(activeCards).length === 0 && Object.keys(fadingCards).length === 0) activeEmpty.style.display = '';
 
         addCompletedRow(tx);
         updateSummary();
@@ -973,10 +1044,61 @@
         engine.subscribe({ tgids: [], systems: [] });
       });
 
-      setInterval(updateSummary, 1000);
+      setInterval(function() {
+        updateSummary();
+        // Sweep stale active cards — transmission_end only fires when the
+        // next frame arrives, so TGs that go permanently silent would stay
+        // in the active list forever. Remove cards with no frame in >1s.
+        if (!engine) return;
+        var now = performance.now();
+        var staleKeys = [];
+        Object.keys(activeCards).forEach(function(key) {
+          var entry = engine._jitterTracking.get(key);
+          if (!entry || !entry.transmission) { staleKeys.push(key); return; }
+          if (entry.prevClientTime > 0 && (now - entry.prevClientTime) > 1000) {
+            staleKeys.push(key);
+          }
+        });
+        staleKeys.forEach(function(key) {
+          var info = activeCards[key];
+          delete activeCards[key];
+          if (info) {
+            // Move to completed
+            var entry = engine._jitterTracking.get(key);
+            var tx = entry && entry.transmission ? entry.transmission : info.tx;
+            if (tx) {
+              tx.endTime = entry ? entry.prevClientTime : now;
+              tx.duration = tx.endTime - tx.startTime;
+              tx.clientStats = tx.clientStats || {};
+              tx.serverStats = tx.serverStats || {};
+              tx.networkStats = tx.networkStats || {};
+              tx.deltas = info.deltas;
+              addCompletedRow(tx);
+            }
+            info.card.classList.remove('active');
+            info.card.classList.add('ended');
+            fadingCards[key] = info.card;
+            (function(k, card) {
+              setTimeout(function() {
+                if (fadingCards[k] === card) {
+                  if (card.parentNode) card.parentNode.removeChild(card);
+                  delete fadingCards[k];
+                }
+              }, 2000);
+            })(key, info.card);
+          }
+        });
+        if (staleKeys.length > 0) {
+          if (Object.keys(activeCards).length === 0 && Object.keys(fadingCards).length === 0) activeEmpty.style.display = '';
+          updateSummary();
+        }
+      }, 1000);
     }
 
     function stopEngine() {
+      if (reportPollTimer) { clearInterval(reportPollTimer); reportPollTimer = null; }
+      reportPending = false;
+      btnReport.disabled = false;
       if (engine) {
         engine.stop();
         engine = null;

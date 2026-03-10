@@ -456,6 +456,8 @@ class AudioEngine {
         this._resetJitterStats(entry.networkStats);
         entry.deltas = [];
         entry.deltaIdx = 0;
+        entry.prevClientTime = 0;
+        entry.prevServerTs = 0;
       }
     }
 
@@ -472,6 +474,8 @@ class AudioEngine {
         seqGaps: 0,
         lastSeq: seq,
         deltas: [],
+        audioChunks: [],
+        audioSampleRate: 0,
         clientStats: null,
         serverStats: null,
         networkStats: null
@@ -501,14 +505,23 @@ class AudioEngine {
       this._addJitterSample(entry.networkStats, networkJitter);
 
       var sample = { clientDelta: clientDelta, serverDelta: serverDelta, networkJitter: networkJitter, ts: now };
-      if (entry.deltas.length < this._maxDeltas) {
-        entry.deltas.push(sample);
-      } else {
-        entry.deltas[entry.deltaIdx] = sample;
-        entry.deltaIdx = (entry.deltaIdx + 1) % this._maxDeltas;
-      }
       entry.transmission.deltas.push(sample);
-      this.emit('jitter_sample', { key: key, sample: sample });
+
+      // Filter outliers from chart data: skip deltas > 3x the running mean
+      // (or > 500ms before the mean stabilizes). Keeps reports accurate
+      // while making charts readable.
+      var isOutlier = (entry.stats.count >= 3 && clientDelta > entry.stats.mean * 3)
+        || (entry.stats.count < 3 && clientDelta > 500);
+
+      if (!isOutlier) {
+        if (entry.deltas.length < this._maxDeltas) {
+          entry.deltas.push(sample);
+        } else {
+          entry.deltas[entry.deltaIdx] = sample;
+          entry.deltaIdx = (entry.deltaIdx + 1) % this._maxDeltas;
+        }
+        this.emit('jitter_sample', { key: key, sample: sample });
+      }
     }
 
     entry.prevClientTime = now;
@@ -536,6 +549,14 @@ class AudioEngine {
   _feedPCM(key, int16Samples, sampleRate) {
     var nodes = this.tgNodes.get(key);
     if (!nodes) return;
+
+    // Capture audio for debug reports before the buffer is transferred
+    var entry = this._jitterTracking.get(key);
+    if (entry && entry.transmission) {
+      entry.transmission.audioChunks.push(new Int16Array(int16Samples));
+      if (!entry.transmission.audioSampleRate) entry.transmission.audioSampleRate = sampleRate;
+    }
+
     var msg = {
       type: 'audio',
       samples: int16Samples,

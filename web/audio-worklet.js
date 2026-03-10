@@ -76,7 +76,7 @@ class RadioAudioProcessor extends AudioWorkletProcessor {
     // - During playback, ride through brief underruns with silence
     // - Only fully stop after 500ms of sustained empty buffer (~190 process() calls)
     if (!this.playing) {
-      const startThreshold = Math.floor(this.inputSampleRate * 0.2); // 200ms
+      const startThreshold = Math.floor(this.inputSampleRate * 0.4); // 400ms
       if (this.buffered >= startThreshold) {
         this.playing = true;
         this.silentFrames = 0;
@@ -129,7 +129,13 @@ class RadioAudioProcessor extends AudioWorkletProcessor {
     // Radio audio has natural pauses — stopping too early causes repeated
     // stop/start cycles with audible gaps.
     if (!hadData) {
-      this.underrunCount++;
+      // Only count as underrun during the first ~30ms of silence (~11 frames).
+      // Beyond that it's the natural end-of-transmission wind-down, not a
+      // buffer starvation event. Real underruns are when the buffer drains
+      // mid-transmission (data was flowing and briefly stopped).
+      if (this.silentFrames < 11) {
+        this.underrunCount++;
+      }
       this.silentFrames++;
       // 500ms at 48kHz with 128-sample blocks = ~188 frames
       if (this.silentFrames > 188) {

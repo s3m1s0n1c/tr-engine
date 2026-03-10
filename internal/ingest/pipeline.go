@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -272,6 +273,9 @@ func (p *Pipeline) Start(ctx context.Context) error {
 		return err
 	}
 
+	// Resolve name-based transcription filter entries (e.g. "butco:1001" → "5:1001")
+	p.resolveNamedTGFilters()
+
 	// Skip warmup if identity cache already has entries (not a fresh DB).
 	if p.identity.CacheLen() > 0 {
 		p.warmupDone.Store(true)
@@ -501,6 +505,8 @@ func (p *Pipeline) enqueueTranscription(callID int64, startTime time.Time, syste
 
 // shouldTranscribeTG checks talkgroup include/exclude filters.
 // Supports plain TGIDs ("24513") and system-scoped ("1:24513").
+// System-scoped entries also accept system short_name ("butco:24513"),
+// which is resolved to numeric form at startup via resolveNamedTGFilters.
 // Include takes priority when both are set.
 func (p *Pipeline) shouldTranscribeTG(systemID, tgid int) bool {
 	if len(p.transcribeIncludeTGs) == 0 && len(p.transcribeExcludeTGs) == 0 {
@@ -512,6 +518,35 @@ func (p *Pipeline) shouldTranscribeTG(systemID, tgid int) bool {
 		return p.transcribeIncludeTGs[plain] || p.transcribeIncludeTGs[scoped]
 	}
 	return !p.transcribeExcludeTGs[plain] && !p.transcribeExcludeTGs[scoped]
+}
+
+// resolveNamedTGFilters expands name-based entries like "butco:1001" into
+// their numeric equivalents "5:1001" using the identity cache. Called once
+// after LoadCache in Start(). Entries that can't be resolved are logged and
+// left in place (harmless — they'll never match a numeric lookup).
+func (p *Pipeline) resolveNamedTGFilters() {
+	resolve := func(m map[string]bool) {
+		for entry := range m {
+			name, tgStr, hasSep := strings.Cut(entry, ":")
+			if !hasSep {
+				continue // plain TGID like "24513", nothing to resolve
+			}
+			if _, err := strconv.Atoi(name); err == nil {
+				continue // already numeric like "1:24513"
+			}
+			// name-based: resolve short_name to system_id
+			sysID := p.identity.GetSystemIDForSysName(name)
+			if sysID == 0 {
+				p.log.Warn().Str("entry", entry).Msg("transcription filter: unknown system name, entry will not match")
+				continue
+			}
+			numeric := fmt.Sprintf("%d:%s", sysID, tgStr)
+			m[numeric] = true
+			p.log.Info().Str("from", entry).Str("to", numeric).Msg("transcription filter: resolved system name")
+		}
+	}
+	resolve(p.transcribeIncludeTGs)
+	resolve(p.transcribeExcludeTGs)
 }
 
 // insertSourceTranscription inserts a pre-generated transcript directly, bypassing the STT queue.

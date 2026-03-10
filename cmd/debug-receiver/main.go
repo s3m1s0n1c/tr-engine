@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,7 +21,7 @@ var (
 	uploadDir      = "/data/tr-engine/debug-uploads"
 	listenAddr     = ":8090"
 	webhookURL     = ""
-	maxBody        = int64(1 << 20)       // 1 MB for JSON reports
+	maxBody        = int64(10 << 20)      // 10 MB for JSON reports
 	maxUpload      = int64(50 << 20)      // 50 MB for file uploads
 )
 
@@ -119,8 +120,6 @@ func main() {
 		log.Fatalf("failed to create upload dir %s: %v", uploadDir, err)
 	}
 
-	rl := &rateLimiter{times: make(map[string]time.Time)}
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/report", func(w http.ResponseWriter, r *http.Request) {
 		// CORS
@@ -138,12 +137,19 @@ func main() {
 		}
 
 		ip := extractIP(r)
-		if !rl.Allow(ip) {
-			http.Error(w, "rate limited — try again in 1 minute", http.StatusTooManyRequests)
-			return
+
+		var reader io.Reader = io.LimitReader(r.Body, maxBody)
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			gz, err := gzip.NewReader(reader)
+			if err != nil {
+				http.Error(w, "invalid gzip", http.StatusBadRequest)
+				return
+			}
+			defer gz.Close()
+			reader = gz
 		}
 
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
+		body, err := io.ReadAll(reader)
 		if err != nil {
 			http.Error(w, "read error", http.StatusBadRequest)
 			return

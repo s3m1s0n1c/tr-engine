@@ -503,6 +503,7 @@ func (db *DB) GetRecorderUtilization(ctx context.Context, f RecorderUtilizationF
 			COUNT(*) AS sample_count
 		FROM recorder_snapshots
 		WHERE "time" > now() - make_interval(days => $1)
+		  AND src_num IS NOT NULL
 		  AND ($2::smallint IS NULL OR src_num = $2)
 		  AND ($3::text IS NULL OR instance_id = $3)
 		GROUP BY 1, src_num
@@ -569,6 +570,7 @@ func (db *DB) GetDecodeRateBuckets(ctx context.Context, f DecodeRateBucketFilter
 		FROM decode_rates d
 		LEFT JOIN systems s ON s.system_id = d.system_id
 		WHERE d."time" > now() - make_interval(days => $1)
+		  AND d.system_id IS NOT NULL
 		  AND ($2::int[] IS NULL OR d.system_id = ANY($2))
 		GROUP BY 1, d.system_id, COALESCE(s.name, d.sys_name, '')
 		ORDER BY 1, d.system_id

@@ -500,20 +500,22 @@ class AudioEngine {
       var serverDelta = serverTs - entry.prevServerTs;
       var networkJitter = clientDelta - serverDelta;
 
-      this._addJitterSample(entry.stats, clientDelta);
-      this._addJitterSample(entry.serverStats, serverDelta);
-      this._addJitterSample(entry.networkStats, networkJitter);
-
       var sample = { clientDelta: clientDelta, serverDelta: serverDelta, networkJitter: networkJitter, ts: now };
-      entry.transmission.deltas.push(sample);
 
-      // Filter outliers from chart data: skip deltas > 3x the running mean
-      // (or > 500ms before the mean stabilizes). Keeps reports accurate
-      // while making charts readable.
+      // Filter gaps/outliers: skip deltas > 3x the running mean (or > 500ms
+      // before the mean stabilizes). These are legitimate pauses in the audio
+      // (inter-burst gaps, brief squelch), not jitter — exclude from stats,
+      // charts, and transmission records so they don't inflate metrics.
       var isOutlier = (entry.stats.count >= 3 && clientDelta > entry.stats.mean * 3)
         || (entry.stats.count < 3 && clientDelta > 500);
 
       if (!isOutlier) {
+        this._addJitterSample(entry.stats, clientDelta);
+        this._addJitterSample(entry.serverStats, serverDelta);
+        this._addJitterSample(entry.networkStats, networkJitter);
+
+        entry.transmission.deltas.push(sample);
+
         if (entry.deltas.length < this._maxDeltas) {
           entry.deltas.push(sample);
         } else {

@@ -16,10 +16,10 @@ class RadioAudioProcessor extends AudioWorkletProcessor {
     this.silentFrames = 0; // consecutive process() calls with no data
 
     // Buffer health tracking
-    this.underrunCount = 0;      // total process() calls with empty buffer while playing
+    this.underrunCount = 0;      // times buffer emptied while source was actively sending
     this.overflowCount = 0;      // total overflow trims
     this.playoutStartCount = 0;  // how many times playout started
-    this.playoutStopCount = 0;   // how many times playout stopped (sustained underrun)
+    this.playoutStopCount = 0;   // how many times playout stopped (sustained silence)
     this.minBuffered = Infinity; // min buffer level during playout (samples)
     this.maxBuffered = 0;        // max buffer level during playout (samples)
     this.sumBuffered = 0;        // running sum for average
@@ -27,6 +27,7 @@ class RadioAudioProcessor extends AudioWorkletProcessor {
     this.statsInterval = 0;      // counter for periodic stats reporting
     this.lastEnqueueTime = 0;    // timestamp of last enqueue
     this.enqueueSamplesTotal = 0; // total samples enqueued
+    this.prevHadData = false;    // whether previous process() frame had data
 
     this.port.onmessage = (e) => {
       if (e.data.type === 'audio') {
@@ -125,15 +126,14 @@ class RadioAudioProcessor extends AudioWorkletProcessor {
       }
     }
 
-    // Track sustained underruns: only stop after ~500ms of empty buffer.
+    // Track sustained silence: only stop playout after ~500ms of empty buffer.
     // Radio audio has natural pauses — stopping too early causes repeated
     // stop/start cycles with audible gaps.
     if (!hadData) {
-      // Only count as underrun during the first ~30ms of silence (~11 frames).
-      // Beyond that it's the natural end-of-transmission wind-down, not a
-      // buffer starvation event. Real underruns are when the buffer drains
-      // mid-transmission (data was flowing and briefly stopped).
-      if (this.silentFrames < 11) {
+      // Count as underrun only on the transition from data→empty AND only if
+      // data was enqueued recently (within ~300ms). This distinguishes real
+      // mid-stream buffer starvation from normal end-of-transmission drain.
+      if (this.prevHadData && (currentTime - this.lastEnqueueTime) < 0.3) {
         this.underrunCount++;
       }
       this.silentFrames++;
@@ -146,6 +146,7 @@ class RadioAudioProcessor extends AudioWorkletProcessor {
     } else {
       this.silentFrames = 0;
     }
+    this.prevHadData = hadData;
 
     // Report stats every ~1s (48000/128 ≈ 375 process() calls per second)
     this.statsInterval++;

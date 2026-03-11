@@ -337,6 +337,7 @@
         <button class="btn" id="btn-clear">Clear Log</button>
         <button class="btn" id="btn-stop">Stop</button>
         <button class="btn danger" id="btn-report">Report Problem</button>
+        <label style="font-size:11px;display:inline-flex;align-items:center;gap:4px;margin-left:4px;cursor:pointer"><input type="checkbox" id="include-audio"> Include audio</label>
         <span class="report-status" id="report-status"></span>
       </div>
 
@@ -678,9 +679,33 @@
     }
 
     // ── Move transmission to completed table ──────
+    var completedTxMap = new Map(); // txId -> { tx, row } entry (dedup)
     function addCompletedRow(tx) {
-      totalTxCompleted++;
+      var txId = tx.key + ':' + tx.startTime;
       var cs = tx.clientStats || {}, ss = tx.serverStats || {}, ns = tx.networkStats || {};
+
+      // Dedup: if this transmission was already added (stale sweep vs transmission_end race),
+      // update the existing row with better stats instead of adding a duplicate.
+      var existing = completedTxMap.get(txId);
+      if (existing) {
+        // Only update if the new data has real stats (non-empty mean)
+        if (cs.mean != null) {
+          existing.tx = tx;
+          var tds = existing.row.querySelectorAll('td');
+          if (tds.length >= 7) {
+            tds[1].textContent = fmtDuration(tx.duration);
+            tds[2].textContent = String(tx.frameCount);
+            tds[3].textContent = String(tx.seqGaps);
+            if (tx.seqGaps > 0) tds[3].style.color = 'var(--danger)';
+            tds[4].textContent = fmtMs(cs.min) + ' / ' + fmtMs(cs.mean) + ' / ' + fmtMs(cs.max);
+            tds[5].textContent = fmtMs(ss.min) + ' / ' + fmtMs(ss.mean) + ' / ' + fmtMs(ss.max);
+            tds[6].textContent = fmtMs(ns.min) + ' / ' + fmtMs(ns.mean) + ' / ' + fmtMs(ns.max);
+          }
+        }
+        return;
+      }
+
+      totalTxCompleted++;
 
       var row = document.createElement('tr');
       var cells = [
@@ -714,10 +739,13 @@
 
       requestAnimationFrame(function() { drawSparkline(sparkCanvas, tx.deltas); });
 
-      completedRows.unshift({ tx: tx, row: row });
+      var entry = { tx: tx, row: row };
+      completedRows.unshift(entry);
+      completedTxMap.set(txId, entry);
       while (completedRows.length > 200) {
         var old = completedRows.pop();
         if (old.row.parentNode) old.row.parentNode.removeChild(old.row);
+        completedTxMap.delete(old.tx.key + ':' + old.tx.startTime);
       }
     }
 
@@ -873,12 +901,14 @@
               deltas: tx.deltas,
               clientStats: tx.clientStats, serverStats: tx.serverStats, networkStats: tx.networkStats
             };
-            var merged = mergeAudioChunks(tx);
-            if (merged) {
-              var filename = 'audio_' + i + '.pcm';
-              formData.append(filename, new Blob([merged.buffer], { type: 'application/octet-stream' }), filename);
-              t.audio = { file: filename, sampleRate: tx.audioSampleRate || 8000, samples: merged.length };
-              audioCount++;
+            if (document.getElementById('include-audio').checked) {
+              var merged = mergeAudioChunks(tx);
+              if (merged) {
+                var filename = 'audio_' + i + '.pcm';
+                formData.append(filename, new Blob([merged.buffer], { type: 'application/octet-stream' }), filename);
+                t.audio = { file: filename, sampleRate: tx.audioSampleRate || 8000, samples: merged.length };
+                audioCount++;
+              }
             }
             return t;
           });
@@ -910,7 +940,7 @@
           };
 
           formData.append('report', new Blob([JSON.stringify(report)], { type: 'application/json' }), 'report.json');
-          reportStatus.textContent = 'Sending (' + audioCount + ' audio files)...';
+          reportStatus.textContent = audioCount > 0 ? 'Sending (' + audioCount + ' audio files)...' : 'Sending report...';
 
           return fetch(DEBUG_REPORT_URL, {
             method: 'POST',
@@ -1069,9 +1099,16 @@
             if (tx) {
               tx.endTime = entry ? entry.prevClientTime : now;
               tx.duration = tx.endTime - tx.startTime;
-              tx.clientStats = tx.clientStats || {};
-              tx.serverStats = tx.serverStats || {};
-              tx.networkStats = tx.networkStats || {};
+              // Snapshot real stats from engine tracking (same as transmission_end does)
+              if (entry && entry.stats && entry.stats.count > 0) {
+                tx.clientStats = engine._snapshotJitterStats(entry.stats);
+                tx.serverStats = engine._snapshotJitterStats(entry.serverStats);
+                tx.networkStats = engine._snapshotJitterStats(entry.networkStats);
+              } else {
+                tx.clientStats = tx.clientStats || {};
+                tx.serverStats = tx.serverStats || {};
+                tx.networkStats = tx.networkStats || {};
+              }
               tx.deltas = info.deltas;
               addCompletedRow(tx);
             }

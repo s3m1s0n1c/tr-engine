@@ -144,9 +144,14 @@ func main() {
 				log.Fatal().Err(err).Msg("failed to hash admin password")
 			}
 			if _, err := db.CreateUser(ctx, cfg.AdminUsername, string(hash), "admin"); err != nil {
-				log.Fatal().Err(err).Msg("failed to seed admin user")
+				if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+					log.Info().Str("username", cfg.AdminUsername).Msg("admin user already exists (seeded by another instance)")
+				} else {
+					log.Fatal().Err(err).Msg("failed to seed admin user")
+				}
+			} else {
+				log.Info().Str("username", cfg.AdminUsername).Msg("admin user seeded")
 			}
-			log.Info().Str("username", cfg.AdminUsername).Msg("admin user seeded")
 		}
 	} else {
 		log.Info().Msg("ADMIN_PASSWORD not set — user auth not configured (legacy token mode)")

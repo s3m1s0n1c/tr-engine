@@ -368,9 +368,7 @@ func JWTOrTokenAuth(jwtSecret []byte, writeToken, authToken string) func(http.Ha
 			// JWT path: token contains two dots (header.payload.signature)
 			if len(jwtSecret) > 0 && strings.Count(provided, ".") == 2 {
 				claims := &Claims{}
-				token, err := jwt.ParseWithClaims(provided, claims, func(t *jwt.Token) (any, error) {
-					return jwtSecret, nil
-				})
+				token, err := jwt.ParseWithClaims(provided, claims, jwtKeyFunc(jwtSecret))
 				if err == nil && token.Valid {
 					userID, _ := strconv.Atoi(claims.Subject)
 					r = setAuthContext(r, userID, claims.Username, claims.Role, "jwt")
@@ -446,10 +444,17 @@ func WriteAuth(writeToken, authToken string) func(http.Handler) http.Handler {
 	}
 }
 
-// AdminOnly rejects requests from non-admin users.
+// AdminOnly rejects requests from non-admin users and logs denied attempts.
 func AdminOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if ContextRole(r) != "admin" {
+			log := hlog.FromRequest(r)
+			log.Warn().
+				Str("path", r.URL.Path).
+				Str("username", ContextUsername(r)).
+				Int("user_id", ContextUserID(r)).
+				Str("role", ContextRole(r)).
+				Msg("admin access denied")
 			WriteErrorWithCode(w, http.StatusForbidden, ErrForbidden, "admin access required")
 			return
 		}

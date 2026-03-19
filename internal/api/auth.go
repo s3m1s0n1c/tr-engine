@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -10,6 +11,18 @@ import (
 	"github.com/snarg/tr-engine/internal/database"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// jwtKeyFunc returns a key function that validates the signing algorithm is HS256
+// before returning the HMAC secret. Without this check, an attacker could forge
+// tokens using alg:"none" or switch to an asymmetric algorithm.
+func jwtKeyFunc(secret []byte) jwt.Keyfunc {
+	return func(t *jwt.Token) (any, error) {
+		if t.Method.Alg() != "HS256" {
+			return nil, fmt.Errorf("unexpected signing method: %s", t.Method.Alg())
+		}
+		return secret, nil
+	}
+}
 
 // AuthHandler handles login, token refresh, and logout.
 type AuthHandler struct {
@@ -122,9 +135,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	claims := &RefreshClaims{}
-	token, err := jwt.ParseWithClaims(cookie.Value, claims, func(t *jwt.Token) (any, error) {
-		return h.jwtSecret, nil
-	})
+	token, err := jwt.ParseWithClaims(cookie.Value, claims, jwtKeyFunc(h.jwtSecret))
 	if err != nil || !token.Valid {
 		WriteError(w, http.StatusUnauthorized, "invalid refresh token")
 		return

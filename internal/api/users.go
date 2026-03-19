@@ -61,6 +61,14 @@ func (h *UsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "username and password required")
 		return
 	}
+	if len(req.Username) < 3 {
+		WriteError(w, http.StatusBadRequest, "username must be at least 3 characters")
+		return
+	}
+	if len(req.Password) < 8 {
+		WriteError(w, http.StatusBadRequest, "password must be at least 8 characters")
+		return
+	}
 	if req.Role == "" {
 		req.Role = "viewer"
 	}
@@ -134,6 +142,10 @@ func (h *UsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Password != nil && *req.Password != "" {
+		if len(*req.Password) < 8 {
+			WriteError(w, http.StatusBadRequest, "password must be at least 8 characters")
+			return
+		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(*req.Password), bcrypt.DefaultCost)
 		if err != nil {
 			h.log.Error().Err(err).Msg("users: bcrypt failed")
@@ -153,6 +165,24 @@ func (h *UsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if user == nil {
 		WriteError(w, http.StatusNotFound, "user not found")
 		return
+	}
+
+	// Audit log for role/enabled changes
+	if req.Role != nil {
+		h.log.Info().
+			Int("target_user_id", id).
+			Str("target_username", user.Username).
+			Str("new_role", *req.Role).
+			Int("changed_by", callerID).
+			Msg("user role changed")
+	}
+	if req.Enabled != nil {
+		h.log.Info().
+			Int("target_user_id", id).
+			Str("target_username", user.Username).
+			Bool("enabled", *req.Enabled).
+			Int("changed_by", callerID).
+			Msg("user enabled status changed")
 	}
 
 	WriteJSON(w, http.StatusOK, user)

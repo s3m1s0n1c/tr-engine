@@ -88,6 +88,22 @@ ALTER TABLE systems ADD CONSTRAINT systems_system_type_check
 			WHERE constraint_name = 'calls_transcription_status_check'
 			  AND check_clause LIKE '%empty%')`,
 	},
+	{
+		name: "create users table",
+		sql: `CREATE TABLE IF NOT EXISTS users (
+			id            serial       PRIMARY KEY,
+			username      text         UNIQUE NOT NULL,
+			password_hash text         NOT NULL,
+			role          text         NOT NULL DEFAULT 'viewer'
+			              CHECK (role IN ('viewer', 'editor', 'admin')),
+			enabled       boolean      NOT NULL DEFAULT true,
+			created_at    timestamptz  NOT NULL DEFAULT now(),
+			updated_at    timestamptz  NOT NULL DEFAULT now()
+		);
+		CREATE TRIGGER trg_users_updated_at
+			BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION set_updated_at()`,
+		check: `SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'users')`,
+	},
 }
 
 // Migrate runs all pending schema migrations.

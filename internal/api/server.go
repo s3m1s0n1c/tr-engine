@@ -115,6 +115,14 @@ func NewServer(opts ServerOptions) *Server {
 		})
 	}
 
+	// User auth endpoints (login/refresh/logout) — unauthenticated
+	if opts.Config.JWTSecret != "" {
+		authHandler := NewAuthHandler(opts.DB, []byte(opts.Config.JWTSecret), opts.Log)
+		r.Post("/api/v1/auth/login", authHandler.Login)
+		r.Post("/api/v1/auth/refresh", authHandler.Refresh)
+		r.Post("/api/v1/auth/logout", authHandler.Logout)
+	}
+
 	// Upload endpoint with custom auth (accepts form field key/api_key)
 	// Uploads are write operations — require WRITE_TOKEN when set.
 	// When auth is enabled but WRITE_TOKEN is not set, uploads are blocked
@@ -149,13 +157,21 @@ func NewServer(opts ServerOptions) *Server {
 			r.Use(metrics.InstrumentHandler)
 		}
 		if opts.Config.AuthEnabled {
-			r.Use(BearerAuth(opts.Config.AuthToken, opts.Config.WriteToken))
+			// Use JWTOrTokenAuth which handles both JWT and legacy token auth.
+			r.Use(JWTOrTokenAuth([]byte(opts.Config.JWTSecret), opts.Config.WriteToken, opts.Config.AuthToken))
+
 			r.Use(WriteAuth(opts.Config.WriteToken, opts.Config.AuthToken))
 		}
 		r.Use(ResponseTimeout(opts.Config.WriteTimeout))
 
 		// All API routes under /api/v1
 		r.Route("/api/v1", func(r chi.Router) {
+			// Auth: /me requires authentication (handled by outer group)
+			if opts.Config.JWTSecret != "" {
+				authHandler := NewAuthHandler(opts.DB, []byte(opts.Config.JWTSecret), opts.Log)
+				r.Get("/auth/me", authHandler.Me)
+			}
+
 			NewSystemsHandler(opts.DB).Routes(r)
 			NewTalkgroupsHandler(opts.DB, opts.TGCSVPaths).Routes(r)
 			NewUnitsHandler(opts.DB, opts.UnitCSVPaths).Routes(r)
@@ -174,6 +190,14 @@ func NewServer(opts ServerOptions) *Server {
 			r.Post("/pages", SavePageHandler(webDir))
 
 			NewQueryHandler(opts.DB).Routes(r)
+
+			// User management (admin only)
+			if opts.Config.JWTSecret != "" {
+				r.Route("/users", func(r chi.Router) {
+					r.Use(AdminOnly)
+					NewUsersHandler(opts.DB, opts.Log).Routes(r)
+				})
+			}
 		})
 	})
 

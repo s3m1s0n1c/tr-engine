@@ -1,20 +1,75 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/hlog"
 	"golang.org/x/time/rate"
 )
+
+// Context keys for auth info
+type contextKey int
+
+const (
+	ctxKeyUserID   contextKey = iota
+	ctxKeyUsername
+	ctxKeyRole
+	ctxKeyAuthType
+)
+
+// ContextUserID returns the authenticated user's ID from the request context, or 0.
+func ContextUserID(r *http.Request) int {
+	if v, ok := r.Context().Value(ctxKeyUserID).(int); ok {
+		return v
+	}
+	return 0
+}
+
+// ContextUsername returns the authenticated user's username from the request context.
+func ContextUsername(r *http.Request) string {
+	if v, ok := r.Context().Value(ctxKeyUsername).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// ContextRole returns the authenticated user's role from the request context.
+func ContextRole(r *http.Request) string {
+	if v, ok := r.Context().Value(ctxKeyRole).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// ContextAuthType returns "jwt" or "token" depending on how the request was authenticated.
+func ContextAuthType(r *http.Request) string {
+	if v, ok := r.Context().Value(ctxKeyAuthType).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// setAuthContext returns a new request with auth info in the context.
+func setAuthContext(r *http.Request, userID int, username, role, authType string) *http.Request {
+	ctx := r.Context()
+	ctx = context.WithValue(ctx, ctxKeyUserID, userID)
+	ctx = context.WithValue(ctx, ctxKeyUsername, username)
+	ctx = context.WithValue(ctx, ctxKeyRole, role)
+	ctx = context.WithValue(ctx, ctxKeyAuthType, authType)
+	return r.WithContext(ctx)
+}
 
 func RequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -81,9 +136,18 @@ func CORSWithOrigins(origins []string) func(http.Handler) http.Handler {
 			origin := r.Header.Get("Origin")
 
 			if len(allowed) == 0 {
-				w.Header().Set("Access-Control-Allow-Origin", "*")
+				// Echo back the request origin instead of * to support credentials.
+				// * is incompatible with Access-Control-Allow-Credentials: true.
+				if origin != "" {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Set("Vary", "Origin")
+				} else {
+					w.Header().Set("Access-Control-Allow-Origin", "*")
+				}
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
 			} else if allowed[origin] {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
 				w.Header().Set("Vary", "Origin")
 			} else {
 				// Origin not allowed — still serve the request but without CORS headers.
@@ -280,11 +344,65 @@ func BearerAuth(tokens ...string) func(http.Handler) http.Handler {
 	}
 }
 
+// JWTOrTokenAuth authenticates requests via JWT or legacy bearer tokens.
+// If the token contains two dots, it's treated as a JWT and parsed for claims.
+// Otherwise, it's compared against the legacy tokens (writeToken, authToken).
+// If no JWT secret and no tokens are configured, all requests pass through.
+func JWTOrTokenAuth(jwtSecret []byte, writeToken, authToken string) func(http.Handler) http.Handler {
+	hasTokens := writeToken != "" || authToken != ""
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// No auth configured at all — pass through
+			if len(jwtSecret) == 0 && !hasTokens {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			provided := extractBearerToken(r)
+			if provided == "" {
+				WriteError(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+
+			// JWT path: token contains two dots (header.payload.signature)
+			if len(jwtSecret) > 0 && strings.Count(provided, ".") == 2 {
+				claims := &Claims{}
+				token, err := jwt.ParseWithClaims(provided, claims, func(t *jwt.Token) (any, error) {
+					return jwtSecret, nil
+				})
+				if err == nil && token.Valid {
+					userID, _ := strconv.Atoi(claims.Subject)
+					r = setAuthContext(r, userID, claims.Username, claims.Role, "jwt")
+					next.ServeHTTP(w, r)
+					return
+				}
+				// JWT parse failed — fall through to legacy token check
+			}
+
+			// Legacy token path: check write token first (editor), then auth token (viewer)
+			if writeToken != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(writeToken)) == 1 {
+				r = setAuthContext(r, 0, "", "editor", "token")
+				next.ServeHTTP(w, r)
+				return
+			}
+			if authToken != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(authToken)) == 1 {
+				r = setAuthContext(r, 0, "", "viewer", "token")
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			WriteError(w, http.StatusUnauthorized, "unauthorized")
+		})
+	}
+}
+
 // WriteAuth requires the write token for mutating HTTP methods (POST, PATCH, PUT, DELETE).
 // Read methods (GET, HEAD, OPTIONS) pass through unconditionally.
-//   - writeToken set: mutations must provide it
-//   - writeToken empty + authToken set: mutations blocked (read-only mode)
-//   - both empty: all methods pass through (no auth configured)
+// When JWT auth is active, it checks the user's role from context first.
+//   - editor or admin role → pass
+//   - viewer role → 403
+//   - no role (legacy path) → fall back to WRITE_TOKEN check
 func WriteAuth(writeToken, authToken string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -299,8 +417,20 @@ func WriteAuth(writeToken, authToken string) func(http.Handler) http.Handler {
 				return
 			}
 
+			// Check role from context (set by JWTOrTokenAuth)
+			role := ContextRole(r)
+			if role != "" {
+				if role == "admin" || role == "editor" {
+					next.ServeHTTP(w, r)
+					return
+				}
+				// viewer role → forbidden
+				WriteErrorWithCode(w, http.StatusForbidden, ErrForbidden, "insufficient permissions for write operations")
+				return
+			}
+
+			// Legacy fallback: no role in context
 			if writeToken == "" {
-				// Auth enabled but no WRITE_TOKEN → read-only
 				WriteErrorWithCode(w, http.StatusForbidden, ErrForbidden, "write operations require WRITE_TOKEN")
 				return
 			}
@@ -314,4 +444,15 @@ func WriteAuth(writeToken, authToken string) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// AdminOnly rejects requests from non-admin users.
+func AdminOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ContextRole(r) != "admin" {
+			WriteErrorWithCode(w, http.StatusForbidden, ErrForbidden, "admin access required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

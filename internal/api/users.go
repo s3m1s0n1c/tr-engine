@@ -56,13 +56,13 @@ func (h *UsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	req.Username = strings.TrimSpace(req.Username)
+	req.Username = database.NormalizeUsername(req.Username)
 	if req.Username == "" || req.Password == "" {
 		WriteError(w, http.StatusBadRequest, "username and password required")
 		return
 	}
-	if len(req.Username) < 3 {
-		WriteError(w, http.StatusBadRequest, "username must be at least 3 characters")
+	if !database.ValidateUsername(req.Username) {
+		WriteError(w, http.StatusBadRequest, "username must be a valid email address")
 		return
 	}
 	if len(req.Password) < 8 {
@@ -77,7 +77,7 @@ func (h *UsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), 12)
 	if err != nil {
 		h.log.Error().Err(err).Msg("users: bcrypt failed")
 		WriteError(w, http.StatusInternalServerError, "failed to hash password")
@@ -133,6 +133,26 @@ func (h *UsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 		if *req.Role != "viewer" && *req.Role != "editor" && *req.Role != "admin" {
 			WriteError(w, http.StatusBadRequest, "role must be viewer, editor, or admin")
 			return
+		}
+		// Last-admin protection: if demoting an admin, check they're not the last one
+		if *req.Role != "admin" {
+			target, err := h.db.GetUserByID(r.Context(), id)
+			if err != nil || target == nil {
+				WriteError(w, http.StatusNotFound, "user not found")
+				return
+			}
+			if target.Role == "admin" {
+				adminCount, err := h.db.CountAdmins(r.Context())
+				if err != nil {
+					h.log.Error().Err(err).Msg("users: count admins failed")
+					WriteError(w, http.StatusInternalServerError, "internal error")
+					return
+				}
+				if adminCount <= 1 {
+					WriteErrorWithCode(w, http.StatusForbidden, ErrForbidden, "cannot demote the last admin user")
+					return
+				}
+			}
 		}
 	}
 
@@ -202,11 +222,36 @@ func (h *UsersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Last-admin protection: check if target is an admin and if they're the last one
+	target, err := h.db.GetUserByID(r.Context(), id)
+	if err != nil || target == nil {
+		WriteError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if target.Role == "admin" {
+		adminCount, err := h.db.CountAdmins(r.Context())
+		if err != nil {
+			h.log.Error().Err(err).Msg("users: count admins failed")
+			WriteError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		if adminCount <= 1 {
+			WriteErrorWithCode(w, http.StatusForbidden, ErrForbidden, "cannot delete the last admin user")
+			return
+		}
+	}
+
 	if err := h.db.DeleteUser(r.Context(), id); err != nil {
 		h.log.Error().Err(err).Msg("users: delete failed")
 		WriteError(w, http.StatusInternalServerError, "failed to delete user")
 		return
 	}
+
+	h.log.Info().
+		Int("deleted_user_id", id).
+		Str("deleted_username", target.Username).
+		Int("deleted_by", ContextUserID(r)).
+		Msg("user deleted")
 
 	WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

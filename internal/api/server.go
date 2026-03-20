@@ -2,7 +2,7 @@ package api
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"io/fs"
 	"net/http"
 	"os"
@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
@@ -104,21 +105,42 @@ func NewServer(opts ServerOptions) *Server {
 		r.Post("/api/v1/debug-report", debugReport.Submit)
 	}
 
-	// Web auth bootstrap — returns the token for web UI pages.
-	// No file extension in the URL so CDNs (Cloudflare) won't cache it.
+	// Web auth bootstrap — returns the read token for web UI pages.
+	// If a valid JWT is present in the request, also returns user info.
 	if opts.Config.AuthToken != "" {
-		tokenJSON := fmt.Sprintf(`{"token":"%s"}`, strings.ReplaceAll(opts.Config.AuthToken, `"`, `\"`))
+		jwtSecret := []byte(opts.Config.JWTSecret)
 		r.Get("/api/v1/auth-init", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "no-store")
-			w.Write([]byte(tokenJSON))
+
+			resp := map[string]any{
+				"token": opts.Config.AuthToken,
+			}
+
+			// If there's a valid JWT, include user info (backward compatible —
+			// "user" field is absent, not null, when no JWT present)
+			if provided := extractBearerToken(r); provided != "" && len(jwtSecret) > 0 && strings.Count(provided, ".") == 2 {
+				claims := &Claims{}
+				token, err := jwt.ParseWithClaims(provided, claims, jwtKeyFunc(jwtSecret))
+				if err == nil && token.Valid {
+					resp["user"] = map[string]any{
+						"username": claims.Username,
+						"role":     claims.Role,
+					}
+				}
+			}
+
+			b, _ := json.Marshal(resp)
+			w.Write(b)
 		})
 	}
 
 	// User auth endpoints (login/refresh/logout/setup) — unauthenticated
+	// Login and setup are rate-limited separately (5/min per IP)
+	authRateLimit := AuthRateLimiter()
 	if opts.Config.JWTSecret != "" {
 		authHandler := NewAuthHandler(opts.DB, []byte(opts.Config.JWTSecret), opts.Log)
-		r.Post("/api/v1/auth/login", authHandler.Login)
+		r.With(authRateLimit).Post("/api/v1/auth/login", authHandler.Login)
 		r.Post("/api/v1/auth/refresh", authHandler.Refresh)
 		r.Post("/api/v1/auth/logout", authHandler.Logout)
 	}
@@ -126,7 +148,7 @@ func NewServer(opts ServerOptions) *Server {
 	// First-run setup — unauthenticated, only works when 0 users exist
 	{
 		setupHandler := NewSetupHandler(opts.DB, opts.Log)
-		r.Post("/api/v1/auth/setup", setupHandler.Setup)
+		r.With(authRateLimit).Post("/api/v1/auth/setup", setupHandler.Setup)
 	}
 
 	// Upload endpoint with custom auth (accepts form field key/api_key)

@@ -462,7 +462,7 @@ func WriteAuth(writeToken, authToken string) func(http.Handler) http.Handler {
 			// Check role from context (set by JWTOrTokenAuth)
 			role := ContextRole(r)
 			if role != "" {
-				if role == "admin" || role == "editor" {
+				if RoleLevel(role) >= RoleLevel("editor") {
 					next.ServeHTTP(w, r)
 					return
 				}
@@ -488,10 +488,50 @@ func WriteAuth(writeToken, authToken string) func(http.Handler) http.Handler {
 	}
 }
 
+// AuthRateLimiter limits login/setup attempts to 5 per minute per IP.
+// Separate from the global RateLimiter to avoid locking out legitimate API usage.
+func AuthRateLimiter() func(http.Handler) http.Handler {
+	var mu sync.Mutex
+	limiters := make(map[string]*rate.Limiter)
+	// Clean stale entries every 5 minutes
+	go func() {
+		for range time.Tick(5 * time.Minute) {
+			mu.Lock()
+			for ip, lim := range limiters {
+				if lim.Tokens() >= 5 { // fully replenished = idle
+					delete(limiters, ip)
+				}
+			}
+			mu.Unlock()
+		}
+	}()
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := clientIP(r)
+			mu.Lock()
+			lim, ok := limiters[ip]
+			if !ok {
+				// 5 requests per 60 seconds, burst of 5
+				lim = rate.NewLimiter(rate.Every(12*time.Second), 5)
+				limiters[ip] = lim
+			}
+			mu.Unlock()
+
+			if !lim.Allow() {
+				w.Header().Set("Retry-After", "60")
+				WriteErrorWithCode(w, http.StatusTooManyRequests, "rate_limited", "too many login attempts, try again in 60 seconds")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // AdminOnly rejects requests from non-admin users and logs denied attempts.
 func AdminOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if ContextRole(r) != "admin" {
+		if RoleLevel(ContextRole(r)) < RoleLevel("admin") {
 			log := hlog.FromRequest(r)
 			log.Warn().
 				Str("path", r.URL.Path).

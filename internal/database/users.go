@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -9,22 +10,40 @@ import (
 
 // User represents a user in the system.
 type User struct {
-	ID           int       `json:"id"`
-	Username     string    `json:"username"`
-	PasswordHash string    `json:"-"` // never expose in API responses
-	Role         string    `json:"role"`
-	Enabled      bool      `json:"enabled"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           int        `json:"id"`
+	Username     string     `json:"username"`
+	PasswordHash string     `json:"-"` // never expose in API responses
+	Role         string     `json:"role"`
+	Enabled      bool       `json:"enabled"`
+	DisplayName  string     `json:"display_name,omitempty"`
+	LastLogin    *time.Time `json:"last_login,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+// NormalizeUsername lowercases and trims the username (which must be an email).
+func NormalizeUsername(username string) string {
+	return strings.ToLower(strings.TrimSpace(username))
+}
+
+// ValidateUsername checks that the username looks like an email address.
+func ValidateUsername(username string) bool {
+	u := NormalizeUsername(username)
+	if len(u) < 3 || len(u) > 254 {
+		return false
+	}
+	at := strings.IndexByte(u, '@')
+	dot := strings.LastIndexByte(u, '.')
+	return at > 0 && dot > at+1 && dot < len(u)-1
 }
 
 // GetUserByUsername looks up a user by username for login.
 func (db *DB) GetUserByUsername(ctx context.Context, username string) (*User, error) {
 	var u User
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, username, password_hash, role, enabled, created_at, updated_at
-		 FROM users WHERE username = $1`, username,
-	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.CreatedAt, &u.UpdatedAt)
+		`SELECT id, username, password_hash, role, enabled, display_name, last_login, created_at, updated_at
+		 FROM users WHERE username = $1`, NormalizeUsername(username),
+	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.DisplayName, &u.LastLogin, &u.CreatedAt, &u.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -38,9 +57,9 @@ func (db *DB) GetUserByUsername(ctx context.Context, username string) (*User, er
 func (db *DB) GetUserByID(ctx context.Context, id int) (*User, error) {
 	var u User
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, username, password_hash, role, enabled, created_at, updated_at
+		`SELECT id, username, password_hash, role, enabled, display_name, last_login, created_at, updated_at
 		 FROM users WHERE id = $1`, id,
-	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.CreatedAt, &u.UpdatedAt)
+	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.DisplayName, &u.LastLogin, &u.CreatedAt, &u.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -53,7 +72,7 @@ func (db *DB) GetUserByID(ctx context.Context, id int) (*User, error) {
 // ListUsers returns all users (for admin endpoint).
 func (db *DB) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT id, username, password_hash, role, enabled, created_at, updated_at
+		`SELECT id, username, password_hash, role, enabled, display_name, last_login, created_at, updated_at
 		 FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -63,7 +82,7 @@ func (db *DB) ListUsers(ctx context.Context) ([]User, error) {
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.DisplayName, &u.LastLogin, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, err
 		}
 		users = append(users, u)
@@ -72,18 +91,26 @@ func (db *DB) ListUsers(ctx context.Context) ([]User, error) {
 }
 
 // CreateUser inserts a new user with an already-hashed password.
+// Username is normalized (lowercased) and validated as email format.
 func (db *DB) CreateUser(ctx context.Context, username, passwordHash, role string) (*User, error) {
+	normalized := NormalizeUsername(username)
 	var u User
 	err := db.Pool.QueryRow(ctx,
 		`INSERT INTO users (username, password_hash, role)
 		 VALUES ($1, $2, $3)
-		 RETURNING id, username, password_hash, role, enabled, created_at, updated_at`,
-		username, passwordHash, role,
-	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.CreatedAt, &u.UpdatedAt)
+		 RETURNING id, username, password_hash, role, enabled, display_name, last_login, created_at, updated_at`,
+		normalized, passwordHash, role,
+	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.DisplayName, &u.LastLogin, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	return &u, nil
+}
+
+// UpdateLastLogin sets the last_login timestamp for a user.
+func (db *DB) UpdateLastLogin(ctx context.Context, id int) error {
+	_, err := db.Pool.Exec(ctx, `UPDATE users SET last_login = now() WHERE id = $1`, id)
+	return err
 }
 
 // UserUpdate holds optional fields for a partial user update.
@@ -102,9 +129,9 @@ func (db *DB) UpdateUser(ctx context.Context, id int, upd UserUpdate) (*User, er
 			password_hash = COALESCE($3, password_hash),
 			enabled = COALESCE($4, enabled)
 		 WHERE id = $1
-		 RETURNING id, username, password_hash, role, enabled, created_at, updated_at`,
+		 RETURNING id, username, password_hash, role, enabled, display_name, last_login, created_at, updated_at`,
 		id, upd.Role, upd.PasswordHash, upd.Enabled,
-	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.CreatedAt, &u.UpdatedAt)
+	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.DisplayName, &u.LastLogin, &u.CreatedAt, &u.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -114,7 +141,7 @@ func (db *DB) UpdateUser(ctx context.Context, id int, upd UserUpdate) (*User, er
 	return &u, nil
 }
 
-// DeleteUser removes a user by ID.
+// DeleteUser removes a user by ID. API keys are cascade-deleted via FK.
 func (db *DB) DeleteUser(ctx context.Context, id int) error {
 	ct, err := db.Pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, id)
 	if err != nil {
@@ -124,6 +151,13 @@ func (db *DB) DeleteUser(ctx context.Context, id int) error {
 		return pgx.ErrNoRows
 	}
 	return nil
+}
+
+// CountAdmins returns the number of admin users (for last-admin protection).
+func (db *DB) CountAdmins(ctx context.Context) (int, error) {
+	var count int
+	err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM users WHERE role = 'admin' AND enabled = true`).Scan(&count)
+	return count, err
 }
 
 // CountUsers returns the total number of users (used for seeding check).

@@ -104,6 +104,32 @@ ALTER TABLE systems ADD CONSTRAINT systems_system_type_check
 			BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION set_updated_at()`,
 		check: `SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'users')`,
 	},
+	{
+		name: "add display_name and last_login to users",
+		sql: `ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name text NOT NULL DEFAULT '';
+		      ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login timestamptz`,
+		check: `SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'users' AND column_name = 'display_name')`,
+	},
+	{
+		name: "create api_keys table",
+		sql: `CREATE TABLE IF NOT EXISTS api_keys (
+			id                 serial       PRIMARY KEY,
+			key_hash           text         UNIQUE NOT NULL,
+			key_prefix         text         NOT NULL,
+			user_id            int          REFERENCES users(id) ON DELETE CASCADE,
+			role               text         NOT NULL DEFAULT 'viewer'
+			                   CHECK (role IN ('viewer', 'editor', 'admin')),
+			label              text         NOT NULL DEFAULT '',
+			is_service_account boolean      NOT NULL DEFAULT false,
+			created_at         timestamptz  NOT NULL DEFAULT now(),
+			last_used_at       timestamptz
+		);
+		CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
+		CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash)`,
+		check: `SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'api_keys')`,
+	},
 }
 
 // Migrate runs all pending schema migrations.

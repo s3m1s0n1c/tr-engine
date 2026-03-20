@@ -70,6 +70,9 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Normalize username (email) for case-insensitive lookup
+	req.Username = database.NormalizeUsername(req.Username)
+
 	user, err := h.db.GetUserByUsername(r.Context(), req.Username)
 	if err != nil {
 		h.log.Error().Err(err).Msg("login: database error")
@@ -88,6 +91,11 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
 		WriteError(w, http.StatusUnauthorized, "invalid credentials")
 		return
+	}
+
+	// Update last login timestamp (best-effort, don't fail login on error)
+	if err := h.db.UpdateLastLogin(r.Context(), user.ID); err != nil {
+		h.log.Warn().Err(err).Int("user_id", user.ID).Msg("login: failed to update last_login")
 	}
 
 	// Generate access token

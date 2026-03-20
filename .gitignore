@@ -39,3 +39,6 @@ mqtt-samples.txt
 # Dev utilities
 cmd/mqtt-dump/
 cmd/dbcheck/
+.env.local
+bin/
+tr-engine

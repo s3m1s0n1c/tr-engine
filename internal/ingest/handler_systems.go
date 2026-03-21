@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -80,9 +79,10 @@ func (p *Pipeline) processSystemInfo(instanceID string, sys *SystemInfoData) err
 	}
 
 	// Release warmup gate when system identity is established:
-	// - P25/smartnet: real sysid received
+	// - P25/smartnet: real sysid received, OR type is known (TR may send
+	//   an early systems message with type="p25" before sysid is decoded)
 	// - Conventional: type is known (no sysid to wait for)
-	if (sys.Sysid != "" && sys.Sysid != "0") || strings.HasPrefix(sys.Type, "conventional") {
+	if (sys.Sysid != "" && sys.Sysid != "0") || sys.Type != "" {
 		p.completeWarmup()
 	}
 

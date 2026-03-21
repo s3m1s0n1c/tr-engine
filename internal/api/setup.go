@@ -19,25 +19,10 @@ func NewSetupHandler(db *database.DB, log zerolog.Logger) *SetupHandler {
 }
 
 // Setup creates the first admin user. Only works when zero users exist.
+// Uses an atomic INSERT ... WHERE NOT EXISTS to prevent race conditions
+// where two concurrent requests could both create admin users.
 // POST /auth/setup {"username": "admin@example.com", "password": "..."}
 func (h *SetupHandler) Setup(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		WriteError(w, http.StatusMethodNotAllowed, "POST required")
-		return
-	}
-
-	// Check if any users exist
-	count, err := h.db.CountUsers(r.Context())
-	if err != nil {
-		h.log.Error().Err(err).Msg("setup: count users failed")
-		WriteError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if count > 0 {
-		WriteError(w, http.StatusConflict, "setup already completed — users exist")
-		return
-	}
-
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -64,10 +49,15 @@ func (h *SetupHandler) Setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.db.CreateUser(r.Context(), req.Username, string(hash), "admin")
+	// Atomic: inserts only if no users exist, returns nil if race lost
+	user, err := h.db.CreateFirstUser(r.Context(), req.Username, string(hash), "admin")
 	if err != nil {
 		h.log.Error().Err(err).Msg("setup: create user failed")
 		WriteError(w, http.StatusInternalServerError, "failed to create admin user")
+		return
+	}
+	if user == nil {
+		WriteError(w, http.StatusConflict, "setup already completed — users exist")
 		return
 	}
 

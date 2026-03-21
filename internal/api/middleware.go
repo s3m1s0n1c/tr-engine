@@ -349,7 +349,7 @@ func BearerAuth(tokens ...string) func(http.Handler) http.Handler {
 // Resolution order:
 //  1. JWT (token contains two dots) → parse claims for user_id, role
 //  2. API key (starts with "tre_") → hash lookup in DB for role
-//  3. Legacy WRITE_TOKEN → role=editor
+//  3. Legacy WRITE_TOKEN → role=admin
 //  4. Legacy AUTH_TOKEN → role=viewer
 //
 // If no JWT secret and no tokens are configured, all requests pass through.

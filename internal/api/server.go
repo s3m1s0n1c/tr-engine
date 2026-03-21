@@ -146,8 +146,9 @@ func NewServer(opts ServerOptions) *Server {
 		r.Post("/api/v1/auth/logout", authHandler.Logout)
 	}
 
-	// First-run setup — unauthenticated, only works when 0 users exist
-	{
+	// First-run setup — unauthenticated, only works when 0 users exist.
+	// Only registered when user auth is configured (JWT secret present).
+	if opts.Config.JWTSecret != "" {
 		setupHandler := NewSetupHandler(opts.DB, opts.Log)
 		r.With(authRateLimit).Post("/api/v1/auth/setup", setupHandler.Setup)
 	}

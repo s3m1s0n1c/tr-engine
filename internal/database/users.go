@@ -91,7 +91,7 @@ func (db *DB) ListUsers(ctx context.Context) ([]User, error) {
 }
 
 // CreateUser inserts a new user with an already-hashed password.
-// Username is normalized (lowercased) and validated as email format.
+// Username is normalized (lowercased).
 func (db *DB) CreateUser(ctx context.Context, username, passwordHash, role string) (*User, error) {
 	normalized := NormalizeUsername(username)
 	var u User
@@ -101,6 +101,29 @@ func (db *DB) CreateUser(ctx context.Context, username, passwordHash, role strin
 		 RETURNING id, username, password_hash, role, enabled, display_name, last_login, created_at, updated_at`,
 		normalized, passwordHash, role,
 	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.DisplayName, &u.LastLogin, &u.CreatedAt, &u.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// CreateFirstUser atomically creates the first user only if no users exist.
+// Returns (nil, nil) if users already exist (not an error — setup already done).
+// This prevents the TOCTOU race in POST /auth/setup where two concurrent
+// requests could both pass a CountUsers==0 check and create two admins.
+func (db *DB) CreateFirstUser(ctx context.Context, username, passwordHash, role string) (*User, error) {
+	normalized := NormalizeUsername(username)
+	var u User
+	err := db.Pool.QueryRow(ctx,
+		`INSERT INTO users (username, password_hash, role)
+		 SELECT $1, $2, $3
+		 WHERE NOT EXISTS (SELECT 1 FROM users)
+		 RETURNING id, username, password_hash, role, enabled, display_name, last_login, created_at, updated_at`,
+		normalized, passwordHash, role,
+	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.DisplayName, &u.LastLogin, &u.CreatedAt, &u.UpdatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil // users already exist
+	}
 	if err != nil {
 		return nil, err
 	}

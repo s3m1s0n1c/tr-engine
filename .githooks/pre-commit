@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Pre-commit hook: block commits containing likely secrets
+set -euo pipefail
+
+BLOCKED=0
+
+# Generic patterns that catch secrets without containing them
+PATTERNS=(
+    'POSTGRES_PASSWORD=[^${\}]'
+    'MQTT_PASSWORD=[^${\}]'
+    'AUTH_TOKEN=[^${\}]'
+    'WRITE_TOKEN=[^${\}]'
+    'API_KEY=[^${\}]'
+    'SECRET_KEY=[^${\}]'
+    'PRIVATE_KEY=[^${\}]'
+    'BEGIN.*PRIVATE KEY'
+    'password\s*[:=]\s*['\''"][^'\''"]+['\''"]'
+)
+
+# Only check staged files (what's actually being committed)
+STAGED=$(git diff --cached --name-only --diff-filter=ACM)
+
+if [ -z "$STAGED" ]; then
+    exit 0
+fi
+
+# Whitelist files where these patterns are expected
+WHITELIST="sample.env|\.example|\.template|CLAUDE\.md|\.githooks/"
+
+for pattern in "${PATTERNS[@]}"; do
+    MATCHES=$(git diff --cached -U0 -- $STAGED | grep -iE "$pattern" | grep -vE "$WHITELIST" || true)
+    if [ -n "$MATCHES" ]; then
+        echo "ERROR: Possible secret detected matching pattern: $pattern"
+        echo "$MATCHES" | head -5
+        echo ""
+        BLOCKED=1
+    fi
+done
+
+# Block .env files from being committed
+for file in $STAGED; do
+    if [[ "$file" =~ ^\.env(\.|$) ]] && [[ ! "$file" =~ \.example$ ]]; then
+        echo "ERROR: Refusing to commit env file: $file"
+        BLOCKED=1
+    fi
+done
+
+if [ "$BLOCKED" -ne 0 ]; then
+    echo "---"
+    echo "Commit blocked. If this is a false positive, use: git commit --no-verify"
+    exit 1
+fi

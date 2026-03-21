@@ -21,6 +21,7 @@ import (
 	"github.com/snarg/tr-engine/internal/storage"
 	"github.com/snarg/tr-engine/internal/transcribe"
 	"github.com/snarg/tr-engine/internal/trconfig"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // version, commit, and buildTime are injected at build time via ldflags.
@@ -130,6 +131,30 @@ func main() {
 	// Run idempotent schema migrations — fatal on failure since queries depend on these columns
 	if err := db.Migrate(ctx); err != nil {
 		log.Fatal().Err(err).Msg("schema migration failed (run ALTER TABLE manually or grant ALTER privileges)")
+	}
+
+	// Seed admin user if ADMIN_PASSWORD is set and no users exist
+	if cfg.AdminPassword != "" {
+		count, err := db.CountUsers(ctx)
+		if err != nil {
+			log.Warn().Err(err).Msg("failed to check user count for seeding")
+		} else if count == 0 {
+			hash, err := bcrypt.GenerateFromPassword([]byte(cfg.AdminPassword), bcrypt.DefaultCost)
+			if err != nil {
+				log.Fatal().Err(err).Msg("failed to hash admin password")
+			}
+			if _, err := db.CreateUser(ctx, cfg.AdminUsername, string(hash), "admin"); err != nil {
+				if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+					log.Info().Str("username", cfg.AdminUsername).Msg("admin user already exists (seeded by another instance)")
+				} else {
+					log.Fatal().Err(err).Msg("failed to seed admin user")
+				}
+			} else {
+				log.Info().Str("username", cfg.AdminUsername).Msg("admin user seeded")
+			}
+		}
+	} else {
+		log.Info().Msg("ADMIN_PASSWORD not set — user auth not configured (legacy token mode)")
 	}
 
 	// Audio storage (local disk default, optional S3)
@@ -379,6 +404,9 @@ func main() {
 		log.Info().Msg("write protection enabled (WRITE_TOKEN set)")
 	} else if cfg.AuthEnabled {
 		log.Warn().Msg("WRITE_TOKEN not set — write endpoints accept the read token")
+	}
+	if cfg.JWTSecret != "" {
+		log.Info().Msg("JWT user authentication enabled")
 	}
 
 	// Detect ingest modes and Docker for update checker

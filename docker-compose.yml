@@ -81,7 +81,7 @@ services:
     restart: unless-stopped
 
   tr-dashboard:
-    image: ghcr.io/lumenprima/tr-dashboard:latest
+    image: ghcr.io/trunk-reporter/tr-dashboard:latest
     environment:
       TR_ENGINE_URL: http://tr-engine:8080
       TR_AUTH_TOKEN: ${AUTH_TOKEN:-}

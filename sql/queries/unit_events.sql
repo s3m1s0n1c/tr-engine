@@ -50,3 +50,14 @@ SELECT lj.*, EXISTS(
       )
 ) AS went_off
 FROM latest_joins lj;
+
+-- name: GetUnitEventsForCall :many
+-- Fetches unit_event:call rows matching a call's (system_id, tgid, time range).
+-- Used to synthesize srcList/freqList when trunk-recorder doesn't provide them
+-- (e.g., encrypted calls where the voice channel can't be decoded).
+SELECT unit_rid, "position", length, unit_alpha_tag, freq, emergency, "time"
+FROM unit_events
+WHERE system_id = $1 AND tgid = $2
+    AND event_type = 'call'
+    AND "time" BETWEEN $3 AND $4
+ORDER BY "position" ASC NULLS LAST, "time" ASC;

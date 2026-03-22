@@ -116,6 +116,22 @@ func int32sToInts(s []int32) []int {
 	return r
 }
 
+// toInt extracts an int from interface{} values (e.g., sqlc GREATEST() results).
+func toInt(v interface{}) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int32:
+		return int(n)
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	default:
+		return 0
+	}
+}
+
 func pgtz(t time.Time) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: t, Valid: true}
 }
@@ -339,6 +355,20 @@ func (db *DB) SetCallGroupPrimary(ctx context.Context, callGroupID int, callID i
 func (db *DB) UpdateCallSrcFreq(ctx context.Context, callID int64, startTime time.Time,
 	srcList json.RawMessage, freqList json.RawMessage, unitIDs []int32) error {
 	return db.Q.UpdateCallSrcFreq(ctx, sqlcdb.UpdateCallSrcFreqParams{
+		CallID:    callID,
+		StartTime: pgtz(startTime),
+		SrcList:   srcList,
+		FreqList:  freqList,
+		UnitIds:   int32sToInts(unitIDs),
+	})
+}
+
+// UpdateCallSrcFreqIfNull conditionally updates srcList/freqList/unit_ids only when
+// src_list IS NULL (no real data from trunk-recorder). Returns rows affected:
+// 1 = synthesized data written, 0 = real data already present (no-op).
+func (db *DB) UpdateCallSrcFreqIfNull(ctx context.Context, callID int64, startTime time.Time,
+	srcList json.RawMessage, freqList json.RawMessage, unitIDs []int32) (int64, error) {
+	return db.Q.UpdateCallSrcFreqIfNull(ctx, sqlcdb.UpdateCallSrcFreqIfNullParams{
 		CallID:    callID,
 		StartTime: pgtz(startTime),
 		SrcList:   srcList,

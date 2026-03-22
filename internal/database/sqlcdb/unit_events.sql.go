@@ -11,6 +11,68 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getUnitEventsForCall = `-- name: GetUnitEventsForCall :many
+SELECT unit_rid, "position", length, unit_alpha_tag, freq, emergency, "time"
+FROM unit_events
+WHERE system_id = $1 AND tgid = $2
+    AND event_type = 'call'
+    AND "time" BETWEEN $3 AND $4
+ORDER BY "position" ASC NULLS LAST, "time" ASC
+`
+
+type GetUnitEventsForCallParams struct {
+	SystemID int
+	Tgid     *int32
+	Time     pgtype.Timestamptz
+	Time_2   pgtype.Timestamptz
+}
+
+type GetUnitEventsForCallRow struct {
+	UnitRid      int
+	Position     *float32
+	Length       *float32
+	UnitAlphaTag *string
+	Freq         *int64
+	Emergency    *bool
+	Time         pgtype.Timestamptz
+}
+
+// Fetches unit_event:call rows matching a call's (system_id, tgid, time range).
+// Used to synthesize srcList/freqList when trunk-recorder doesn't provide them
+// (e.g., encrypted calls where the voice channel can't be decoded).
+func (q *Queries) GetUnitEventsForCall(ctx context.Context, arg GetUnitEventsForCallParams) ([]GetUnitEventsForCallRow, error) {
+	rows, err := q.db.Query(ctx, getUnitEventsForCall,
+		arg.SystemID,
+		arg.Tgid,
+		arg.Time,
+		arg.Time_2,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetUnitEventsForCallRow{}
+	for rows.Next() {
+		var i GetUnitEventsForCallRow
+		if err := rows.Scan(
+			&i.UnitRid,
+			&i.Position,
+			&i.Length,
+			&i.UnitAlphaTag,
+			&i.Freq,
+			&i.Emergency,
+			&i.Time,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertUnitEvent = `-- name: InsertUnitEvent :exec
 INSERT INTO unit_events (
     event_type, system_id, unit_rid, "time", tgid,

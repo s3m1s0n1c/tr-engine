@@ -452,6 +452,152 @@ func (p *Pipeline) processWatchedFile(instanceID string, meta *AudioMetadata, js
 	return nil
 }
 
+// synthesizeSrcList builds srcList/freqList from unit_event:call records when
+// trunk-recorder didn't provide them (e.g., encrypted calls). Only writes if the
+// call's src_list is still NULL — never clobbers real data from the audio handler.
+func (p *Pipeline) synthesizeSrcList(ctx context.Context, callID int64, callStartTime time.Time,
+	systemID, tgid int, stopTime time.Time, callLength float32) {
+	// Widen the window slightly to catch events near call boundaries
+	windowStart := callStartTime.Add(-2 * time.Second)
+	windowEnd := stopTime.Add(5 * time.Second)
+
+	events, err := p.db.GetUnitEventsForCall(ctx, systemID, tgid, windowStart, windowEnd)
+	if err != nil {
+		p.log.Warn().Err(err).Int64("call_id", callID).Msg("failed to query unit events for srcList synthesis")
+		return
+	}
+	if len(events) == 0 {
+		return
+	}
+
+	// Build srcList entries from unit_event:call rows
+	type srcEntry struct {
+		Src       int     `json:"src"`
+		Time      int64   `json:"time"`
+		Pos       float64 `json:"pos"`
+		Emergency int     `json:"emergency"`
+		Tag       string  `json:"tag,omitempty"`
+		Duration  float64 `json:"duration,omitempty"`
+	}
+	srcEntries := make([]srcEntry, 0, len(events))
+	unitSet := make(map[int32]struct{})
+
+	for _, ev := range events {
+		emergency := 0
+		if ev.Emergency {
+			emergency = 1
+		}
+		dur := float64(ev.Length)
+		srcEntries = append(srcEntries, srcEntry{
+			Src:       ev.UnitRID,
+			Time:      ev.Time.Unix(),
+			Pos:       float64(ev.Position),
+			Emergency: emergency,
+			Tag:       ev.UnitAlphaTag,
+			Duration:  dur,
+		})
+		unitSet[int32(ev.UnitRID)] = struct{}{}
+	}
+
+	srcListJSON, _ := json.Marshal(srcEntries)
+
+	// Build freqList from distinct frequencies
+	type freqEntry struct {
+		Freq      int64   `json:"freq"`
+		Time      int64   `json:"time"`
+		Pos       float64 `json:"pos"`
+		Len       float64 `json:"len"`
+		ErrorCount int    `json:"error_count"`
+		SpikeCount int    `json:"spike_count"`
+	}
+	freqMap := make(map[int64]bool)
+	var freqEntries []freqEntry
+	for _, ev := range events {
+		if ev.Freq > 0 && !freqMap[ev.Freq] {
+			freqMap[ev.Freq] = true
+			freqEntries = append(freqEntries, freqEntry{
+				Freq: ev.Freq,
+				Time: ev.Time.Unix(),
+				Pos:  float64(ev.Position),
+				Len:  float64(callLength),
+			})
+		}
+	}
+	var freqListJSON json.RawMessage
+	if len(freqEntries) > 0 {
+		freqListJSON, _ = json.Marshal(freqEntries)
+	}
+
+	unitIDs := make([]int32, 0, len(unitSet))
+	for uid := range unitSet {
+		unitIDs = append(unitIDs, uid)
+	}
+
+	// Conditional update: only writes if src_list IS NULL
+	updated, err := p.db.UpdateCallSrcFreqIfNull(ctx, callID, callStartTime, srcListJSON, freqListJSON, unitIDs)
+	if err != nil {
+		p.log.Warn().Err(err).Int64("call_id", callID).Msg("failed to write synthesized srcList")
+		return
+	}
+	if updated == 0 {
+		return // real data already present
+	}
+
+	// Insert into relational tables for ad-hoc queries
+	txRows := make([]database.CallTransmissionRow, 0, len(srcEntries))
+	for _, s := range srcEntries {
+		t := time.Unix(s.Time, 0)
+		pos := float32(s.Pos)
+		var dur *float32
+		if s.Duration > 0 {
+			d := float32(s.Duration)
+			dur = &d
+		}
+		txRows = append(txRows, database.CallTransmissionRow{
+			CallID:        callID,
+			CallStartTime: callStartTime,
+			Src:           s.Src,
+			Time:          &t,
+			Pos:           &pos,
+			Duration:      dur,
+			Emergency:     int16(s.Emergency),
+			Tag:           s.Tag,
+		})
+	}
+	if len(txRows) > 0 {
+		if _, err := p.db.InsertCallTransmissions(ctx, txRows); err != nil {
+			p.log.Warn().Err(err).Int64("call_id", callID).Msg("failed to insert synthesized call transmissions")
+		}
+	}
+
+	if len(freqEntries) > 0 {
+		fRows := make([]database.CallFrequencyRow, 0, len(freqEntries))
+		for _, f := range freqEntries {
+			ft := time.Unix(f.Time, 0)
+			pos := float32(f.Pos)
+			length := float32(f.Len)
+			fRows = append(fRows, database.CallFrequencyRow{
+				CallID:        callID,
+				CallStartTime: callStartTime,
+				Freq:          f.Freq,
+				Time:          &ft,
+				Pos:           &pos,
+				Len:           &length,
+			})
+		}
+		if _, err := p.db.InsertCallFrequencies(ctx, fRows); err != nil {
+			p.log.Warn().Err(err).Int64("call_id", callID).Msg("failed to insert synthesized call frequencies")
+		}
+	}
+
+	p.log.Debug().
+		Int64("call_id", callID).
+		Int("srcs", len(srcEntries)).
+		Int("freqs", len(freqEntries)).
+		Int("units", len(unitIDs)).
+		Msg("synthesized srcList from unit events")
+}
+
 // buildAudioFilename returns the filename to use for saving audio.
 // If filename is empty, generates one from the start time and audio type.
 func buildAudioFilename(filename, audioType string, startTime time.Time) string {

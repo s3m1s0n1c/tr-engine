@@ -238,6 +238,56 @@ func (db *DB) InsertUnitEvent(ctx context.Context, e *UnitEventRow) error {
 	})
 }
 
+// UnitEventForCallRow holds a unit_event:call row used for srcList synthesis.
+type UnitEventForCallRow struct {
+	UnitRID      int
+	Position     float32
+	Length       float32
+	UnitAlphaTag string
+	Freq         int64
+	Emergency    bool
+	Time         time.Time
+}
+
+// GetUnitEventsForCall returns unit_event:call rows matching a call's time range.
+// Used to synthesize srcList when trunk-recorder doesn't provide it.
+func (db *DB) GetUnitEventsForCall(ctx context.Context, systemID, tgid int, startTime, stopTime time.Time) ([]UnitEventForCallRow, error) {
+	tgid32 := int32(tgid)
+	rows, err := db.Q.GetUnitEventsForCall(ctx, sqlcdb.GetUnitEventsForCallParams{
+		SystemID: systemID,
+		Tgid:     &tgid32,
+		Time:     pgtz(startTime),
+		Time_2:   pgtz(stopTime),
+	})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]UnitEventForCallRow, 0, len(rows))
+	for _, r := range rows {
+		row := UnitEventForCallRow{
+			UnitRID: r.UnitRid,
+			Time:    r.Time.Time,
+		}
+		if r.Position != nil {
+			row.Position = *r.Position
+		}
+		if r.Length != nil {
+			row.Length = *r.Length
+		}
+		if r.UnitAlphaTag != nil {
+			row.UnitAlphaTag = *r.UnitAlphaTag
+		}
+		if r.Freq != nil {
+			row.Freq = *r.Freq
+		}
+		if r.Emergency != nil {
+			row.Emergency = *r.Emergency
+		}
+		result = append(result, row)
+	}
+	return result, nil
+}
+
 // AffiliationBackfillRow holds the data needed to populate an affiliation map entry from the DB.
 type AffiliationBackfillRow struct {
 	SystemID      int

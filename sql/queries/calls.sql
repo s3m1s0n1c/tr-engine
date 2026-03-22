@@ -157,3 +157,12 @@ SELECT freq_list FROM calls WHERE call_id = $1 ORDER BY start_time DESC LIMIT 1;
 
 -- name: GetCallSrcList :one
 SELECT src_list FROM calls WHERE call_id = $1 ORDER BY start_time DESC LIMIT 1;
+
+-- name: UpdateCallSrcFreqIfNull :execrows
+-- Like UpdateCallSrcFreq but only writes when src_list is NULL (no real data yet).
+-- Returns rows affected: 1 = synthesized data written, 0 = real data already present.
+UPDATE calls SET
+    src_list = $3,
+    freq_list = $4,
+    unit_ids = $5
+WHERE call_id = $1 AND start_time = $2 AND src_list IS NULL;

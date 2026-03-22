@@ -373,6 +373,11 @@ func (p *Pipeline) handleCallEnd(payload []byte) error {
 			}
 			p.enqueueTranscription(entry.CallID, entry.StartTime, identity.SystemID, "", meta)
 		}
+
+		// Synthesize srcList from unit_event:call records if TR didn't provide one
+		// (e.g., encrypted calls). Only writes if src_list is still NULL.
+		p.synthesizeSrcList(ctx, entry.CallID, entry.StartTime,
+			identity.SystemID, call.Talkgroup, stopTime, float32(call.Length))
 	}
 
 	return nil
@@ -530,6 +535,10 @@ func (p *Pipeline) handleCallStartFromEnd(ctx context.Context, msg *CallEndMsg) 
 			p.enqueueTranscription(existingID, existingST, identity.SystemID, "", meta)
 		}
 
+		// Synthesize srcList from unit events if TR didn't provide one
+		p.synthesizeSrcList(ctx, existingID, existingST,
+			identity.SystemID, call.Talkgroup, stopTime, duration)
+
 		return nil
 	}
 
@@ -604,6 +613,10 @@ func (p *Pipeline) handleCallStartFromEnd(ctx context.Context, msg *CallEndMsg) 
 		}
 		p.enqueueTranscription(callID, startTime, identity.SystemID, "", meta)
 	}
+
+	// Synthesize srcList from unit events if TR didn't provide one
+	p.synthesizeSrcList(ctx, callID, startTime,
+		identity.SystemID, call.Talkgroup, stopTime, duration)
 
 	return nil
 }
@@ -705,6 +718,10 @@ func (p *Pipeline) handleCallsActive(payload []byte) error {
 				"encrypted":      entry.Encrypted,
 			},
 		})
+
+		// Synthesize srcList from unit events if TR didn't provide one
+		p.synthesizeSrcList(ctx, entry.CallID, entry.StartTime,
+			entry.SystemID, entry.Tgid, stopTime, duration)
 	}
 
 	p.log.Debug().

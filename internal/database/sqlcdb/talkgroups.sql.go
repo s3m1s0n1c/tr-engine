@@ -113,7 +113,7 @@ type GetTalkgroupByCompositeRow struct {
 	CallCount   int
 	Calls1h     int
 	Calls24h    int
-	UnitCount   int
+	UnitCount   interface{}
 }
 
 func (q *Queries) GetTalkgroupByComposite(ctx context.Context, arg GetTalkgroupByCompositeParams) (GetTalkgroupByCompositeRow, error) {

@@ -484,6 +484,38 @@ func (q *Queries) UpdateCallSrcFreq(ctx context.Context, arg UpdateCallSrcFreqPa
 	return err
 }
 
+const updateCallSrcFreqIfNull = `-- name: UpdateCallSrcFreqIfNull :execrows
+UPDATE calls SET
+    src_list = $3,
+    freq_list = $4,
+    unit_ids = $5
+WHERE call_id = $1 AND start_time = $2 AND src_list IS NULL
+`
+
+type UpdateCallSrcFreqIfNullParams struct {
+	CallID    int64
+	StartTime pgtype.Timestamptz
+	SrcList   []byte
+	FreqList  []byte
+	UnitIds   []int
+}
+
+// Like UpdateCallSrcFreq but only writes when src_list is NULL (no real data yet).
+// Returns rows affected: 1 = synthesized data written, 0 = real data already present.
+func (q *Queries) UpdateCallSrcFreqIfNull(ctx context.Context, arg UpdateCallSrcFreqIfNullParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateCallSrcFreqIfNull,
+		arg.CallID,
+		arg.StartTime,
+		arg.SrcList,
+		arg.FreqList,
+		arg.UnitIds,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const updateCallStartFields = `-- name: UpdateCallStartFields :exec
 UPDATE calls SET
     tr_call_id = $3,

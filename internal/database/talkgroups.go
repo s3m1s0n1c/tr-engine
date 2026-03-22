@@ -103,7 +103,7 @@ func talkgroupRowToAPI(r sqlcdb.GetTalkgroupByCompositeRow) TalkgroupAPI {
 		CallCount:   r.CallCount,
 		Calls1h:     r.Calls1h,
 		Calls24h:    r.Calls24h,
-		UnitCount:   toInt(r.UnitCount),
+		UnitCount:   r.UnitCount,
 	}
 	if r.Priority != nil {
 		v := int(*r.Priority)

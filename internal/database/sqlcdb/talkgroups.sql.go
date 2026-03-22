@@ -86,7 +86,7 @@ SELECT t.system_id, COALESCE(s.name, '') AS system_name, s.sysid,
     GREATEST(
         (SELECT count(DISTINCT unit_rid)::int FROM unit_events ue WHERE ue.system_id = t.system_id AND ue.tgid = t.tgid AND ue.time > now() - interval '30 days'),
         (SELECT count(DISTINCT u)::int FROM calls c, unnest(c.unit_ids) AS u WHERE c.system_id = t.system_id AND c.tgid = t.tgid AND c.start_time > now() - interval '30 days' AND c.unit_ids IS NOT NULL)
-    ) AS unit_count
+    )::int AS unit_count
 FROM talkgroups t
 JOIN systems s ON s.system_id = t.system_id
 WHERE t.system_id = $1 AND t.tgid = $2
@@ -113,7 +113,7 @@ type GetTalkgroupByCompositeRow struct {
 	CallCount   int
 	Calls1h     int
 	Calls24h    int
-	UnitCount   interface{}
+	UnitCount   int
 }
 
 func (q *Queries) GetTalkgroupByComposite(ctx context.Context, arg GetTalkgroupByCompositeParams) (GetTalkgroupByCompositeRow, error) {

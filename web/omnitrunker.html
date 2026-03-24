@@ -80,32 +80,6 @@
 
   .stats { margin-left: auto; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
 
-  /* ── Auth Prompt ── */
-  .auth-prompt { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 10000; align-items: center; justify-content: center; }
-  .auth-prompt.visible { display: flex; }
-  .auth-box {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 24px; max-width: 360px; width: 90%;
-  }
-  .auth-box h2 { font-size: 15px; color: var(--text); margin-bottom: 4px; font-family: var(--font-display); }
-  .auth-box p { font-size: 13px; color: var(--text-muted); margin-bottom: 16px; }
-  .auth-box input {
-    width: 100%; padding: 8px 10px;
-    background: var(--bg); border: 1px solid var(--border);
-    border-radius: var(--radius-xs); color: var(--text);
-    font-family: var(--font-mono); font-size: 13px; margin-bottom: 12px;
-  }
-  .auth-box input:focus { outline: none; border-color: var(--accent); }
-  .auth-box button {
-    padding: 6px 16px; background: var(--accent);
-    border: none; border-radius: var(--radius-xs);
-    color: #fff; font-size: 13px; cursor: pointer;
-    transition: opacity 0.15s;
-  }
-  .auth-box button:hover { opacity: 0.85; }
-
   /* ── Panels ── */
   .panels {
     position: relative; z-index: 1;
@@ -898,15 +872,6 @@
   <div class="credit">Shamelessly ripped off: <a href="https://github.com/taclane/tr-web" target="_blank" rel="noopener">taclane/tr-web</a> &amp; <a href="https://www.unitrunker.com/" target="_blank" rel="noopener">UniTrunker</a></div>
 </div>
 
-<div id="auth-prompt" class="auth-prompt">
-  <div class="auth-box">
-    <h2>Authentication Required</h2>
-    <p>Enter your API token to connect to the event stream.</p>
-    <input id="auth-token" type="password" placeholder="Bearer token" autofocus>
-    <button id="auth-submit">Connect</button>
-  </div>
-</div>
-
 <div class="settings-overlay" id="settings-overlay"></div>
 <div class="settings-panel" id="settings-panel">
   <div class="settings-header">
@@ -1190,16 +1155,12 @@ const typeFilterDropdown = new MultiSelectDropdown(
   }
 );
 const clearBtn = document.getElementById('clear-btn');
-const authPrompt = document.getElementById('auth-prompt');
-const authTokenInput = document.getElementById('auth-token');
-const authSubmit = document.getElementById('auth-submit');
 
 // ── State ──
 let eventSource = null;
 let lastEventId = '';
 let totalCount = 0;
 let eventCountDirty = false;
-let authToken = localStorage.getItem('tr-engine-token') || '';
 let everConnected = false;
 
 // Active calls: call_id -> { data, row, startTimeMs, fading, lastAudioTime, lastElapsedText, panDot, wasAudioActive }
@@ -1912,42 +1873,13 @@ clearBtn.addEventListener('click', function() {
   }
 });
 
-// ── Auth ──
-function showAuth() {
-  authPrompt.classList.add('visible');
-  authTokenInput.value = authToken;
-  authTokenInput.focus();
-}
-
-function hideAuth() {
-  authPrompt.classList.remove('visible');
-}
-
-authSubmit.addEventListener('click', function() {
-  authToken = authTokenInput.value.trim();
-  localStorage.setItem('tr-engine-token', authToken);
-  hideAuth();
-  connect();
-});
-
-authTokenInput.addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') {
-    authSubmit.click();
-  }
-});
-
 // ── SSE Connection ──
 function connect() {
   if (eventSource) {
     eventSource.close();
   }
 
-  const params = new URLSearchParams();
-  if (authToken) {
-    params.set('token', authToken);
-  }
-  const qs = params.toString();
-  const url = '/api/v1/events/stream' + (qs ? '?' + qs : '');
+  const url = '/api/v1/events/stream';
 
   setStatus('connecting', 'connecting...');
   everConnected = false;
@@ -1955,17 +1887,12 @@ function connect() {
 
   eventSource.onopen = function() {
     setStatus('connected', 'connected');
-    hideAuth();
     everConnected = true;
   };
 
   eventSource.onerror = function() {
     if (eventSource.readyState === EventSource.CLOSED) {
       setStatus('disconnected', 'disconnected');
-      if (!everConnected) {
-        eventSource.close();
-        showAuth();
-      }
     } else {
       setStatus('connecting', 'reconnecting...');
     }

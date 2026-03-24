@@ -300,29 +300,6 @@
     .tooltip .tt-detail { color: var(--text); font-size: 11px; margin-bottom: 2px; }
     .tooltip .tt-age { color: var(--text-muted); font-size: 10px; }
 
-    .auth-prompt { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 10000; align-items: center; justify-content: center; }
-    .auth-prompt.visible { display: flex; }
-    .auth-box {
-      background: var(--bg); border: 1px solid var(--border);
-      border-radius: var(--radius); padding: 24px; max-width: 360px; width: 90%;
-      font-family: var(--font-mono);
-    }
-    .auth-box h2 { font-size: 14px; color: var(--text); margin-bottom: 4px; font-family: var(--font-display); }
-    .auth-box p { font-size: 12px; color: var(--text-muted); margin-bottom: 16px; }
-    .auth-box input {
-      width: 100%; padding: 8px 10px; background: var(--bg);
-      border: 1px solid var(--border); border-radius: var(--radius-xs);
-      color: var(--text); font-family: inherit; font-size: 12px; margin-bottom: 12px;
-    }
-    .auth-box input:focus { outline: none; border-color: var(--accent); }
-    .auth-box button {
-      padding: 6px 16px; background: var(--accent);
-      border: none; border-radius: var(--radius-xs);
-      color: #fff; font-size: 12px; cursor: pointer; font-family: inherit;
-      transition: opacity 0.15s;
-    }
-    .auth-box button:hover { opacity: 0.85; }
-
     .theme-label {
       position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
       z-index: 10000; font-family: var(--font-display); font-size: 12px;
@@ -389,15 +366,6 @@
   <div class="tt-type" id="tt-type"></div>
   <div class="tt-detail" id="tt-detail"></div>
   <div class="tt-age" id="tt-age"></div>
-</div>
-
-<div id="auth-prompt" class="auth-prompt">
-  <div class="auth-box">
-    <h2>Authentication Required</h2>
-    <p>Enter your API token to connect to the event stream.</p>
-    <input id="auth-token" type="password" placeholder="Bearer token" autofocus>
-    <button id="auth-submit">Connect</button>
-  </div>
 </div>
 
 <div class="theme-label" id="themeLabel"></div>
@@ -476,7 +444,6 @@
   let eventCounter = 0;
   let dirty = false;       // set when enter/exit needed
   let eventSource = null;
-  let authToken = localStorage.getItem('tr-engine-token') || '';
   let everConnected = false;
   let recentTimes = [];
 
@@ -495,9 +462,6 @@
   // ── DOM refs ────────────────────────────────────────
   const svgEl = document.getElementById('timeline');
   const statusDot = document.getElementById('status-dot');
-  const authPrompt = document.getElementById('auth-prompt');
-  const authTokenInput = document.getElementById('auth-token');
-  const authSubmitBtn = document.getElementById('auth-submit');
   const tooltip = document.getElementById('tooltip');
   const ttType = document.getElementById('tt-type');
   const ttDetail = document.getElementById('tt-detail');
@@ -1135,27 +1099,23 @@
 
   // ── SSE Connection ──────────────────────────────────
   function setStatus(state) { statusDot.className = 'pulse-dot ' + state; if (window.ehSetNetworkStatus) window.ehSetNetworkStatus(state); }
-  function showAuth() { authPrompt.classList.add('visible'); authTokenInput.value = authToken; authTokenInput.focus(); }
-  function hideAuth() { authPrompt.classList.remove('visible'); }
 
   function connect() {
     if (eventSource) eventSource.close();
 
     const params = new URLSearchParams();
     params.set('types', SSE_TYPES.join(','));
-    if (authToken) params.set('token', authToken);
     const url = '/api/v1/events/stream?' + params.toString();
 
     setStatus('connecting');
     everConnected = false;
     eventSource = new EventSource(url);
 
-    eventSource.onopen = () => { setStatus('connected'); hideAuth(); everConnected = true; };
+    eventSource.onopen = () => { setStatus('connected'); everConnected = true; };
 
     eventSource.onerror = () => {
       if (eventSource.readyState === EventSource.CLOSED) {
         setStatus('disconnected');
-        if (!everConnected) { eventSource.close(); showAuth(); }
       } else {
         setStatus('connecting');
       }
@@ -1168,14 +1128,6 @@
       });
     });
   }
-
-  authSubmitBtn.addEventListener('click', () => {
-    authToken = authTokenInput.value.trim();
-    localStorage.setItem('tr-engine-token', authToken);
-    hideAuth();
-    connect();
-  });
-  authTokenInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') authSubmitBtn.click(); });
 
   // ── Init ────────────────────────────────────────────
   rebuildGrid();

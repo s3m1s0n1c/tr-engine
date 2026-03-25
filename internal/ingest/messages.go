@@ -132,6 +132,7 @@ type SrcItem struct {
 type AudioCallData struct {
 	AudioWavBase64 string        `json:"audio_wav_base64"`
 	AudioM4ABase64 string        `json:"audio_m4a_base64"`
+	AudioTapBase64 string        `json:"audio_tap_base64"`
 	Metadata       AudioMetadata `json:"metadata"`
 }
 

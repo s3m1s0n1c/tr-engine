@@ -81,6 +81,22 @@ func (p *Pipeline) handleAudio(payload []byte) error {
 			}
 		}
 
+		// Decode and save .tap file alongside audio (for IMBE ASR)
+		if msg.Call.AudioTapBase64 != "" && audioPath != "" {
+			tapDecoded, tapErr := base64.StdEncoding.DecodeString(msg.Call.AudioTapBase64)
+			if tapErr != nil {
+				p.log.Warn().Err(tapErr).Msg("failed to decode tap base64")
+			} else {
+				tapExt := filepath.Ext(audioPath)
+				tapKey := strings.TrimSuffix(audioPath, tapExt) + ".tap"
+				if err := p.saveAudio(ctx, tapKey, tapDecoded, "application/octet-stream"); err != nil {
+					p.log.Error().Err(err).Str("tap_key", tapKey).Msg("failed to save tap file")
+				} else {
+					p.log.Debug().Str("tap_key", tapKey).Int("tap_size", len(tapDecoded)).Msg("tap file saved")
+				}
+			}
+		}
+
 		if callID > 0 && audioPath != "" {
 			if err := p.db.UpdateCallAudio(ctx, callID, callStartTime, audioPath, audioSize); err != nil {
 				p.log.Warn().Err(err).Int64("call_id", callID).Msg("failed to update call audio")

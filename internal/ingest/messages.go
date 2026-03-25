@@ -120,12 +120,12 @@ type FreqItem struct {
 
 // SrcItem is a source/transmission entry in the audio metadata.
 type SrcItem struct {
-	Src          int             `json:"src"`
-	Time         int64           `json:"time"`
-	Pos          float64         `json:"pos"`
-	Emergency    json.RawMessage `json:"emergency"`
-	SignalSystem string          `json:"signal_system"`
-	Tag          string          `json:"tag"`
+	Src          int     `json:"src"`
+	Time         int64   `json:"time"`
+	Pos          float64 `json:"pos"`
+	Emergency    int     `json:"emergency"`
+	SignalSystem string  `json:"signal_system"`
+	Tag          string  `json:"tag"`
 }
 
 // AudioCallData is the "call" field in an audio message.
@@ -285,16 +285,18 @@ type TrunkingMessageMsg struct {
 }
 
 // DvcfMetadata is the metadata sub-object inside a DVCF MQTT message.
+// Uses json.RawMessage for SrcList to avoid type mismatches (TR sends
+// emergency as bool, but the main SrcItem struct uses int).
 type DvcfMetadata struct {
-	Talkgroup    int        `json:"talkgroup"`
-	TalkgroupTag string     `json:"talkgroup_tag"`
-	Freq         float64    `json:"freq"`
-	StartTime    int64      `json:"start_time"`
-	StopTime     int64      `json:"stop_time"`
-	CallLength   int        `json:"call_length"`
-	ShortName    string     `json:"short_name"`
-	Filename     string     `json:"filename"`
-	SrcList      []SrcItem  `json:"srcList"`
+	Talkgroup    int             `json:"talkgroup"`
+	TalkgroupTag string          `json:"talkgroup_tag"`
+	Freq         float64         `json:"freq"`
+	StartTime    int64           `json:"start_time"`
+	StopTime     int64           `json:"stop_time"`
+	CallLength   int             `json:"call_length"`
+	ShortName    string          `json:"short_name"`
+	Filename     string          `json:"filename"`
+	SrcList      json.RawMessage `json:"srcList"`
 }
 
 // DvcfMsg wraps a DVCF message from the mqtt_dvcf plugin.

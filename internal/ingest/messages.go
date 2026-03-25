@@ -120,12 +120,12 @@ type FreqItem struct {
 
 // SrcItem is a source/transmission entry in the audio metadata.
 type SrcItem struct {
-	Src          int     `json:"src"`
-	Time         int64   `json:"time"`
-	Pos          float64 `json:"pos"`
-	Emergency    int     `json:"emergency"`
-	SignalSystem string  `json:"signal_system"`
-	Tag          string  `json:"tag"`
+	Src          int             `json:"src"`
+	Time         int64           `json:"time"`
+	Pos          float64         `json:"pos"`
+	Emergency    json.RawMessage `json:"emergency"`
+	SignalSystem string          `json:"signal_system"`
+	Tag          string          `json:"tag"`
 }
 
 // AudioCallData is the "call" field in an audio message.

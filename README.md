@@ -207,6 +207,8 @@ All under `/api/v1`. See `openapi.yaml` for the full specification.
 | `PUT /calls/{id}/transcription` | Submit human correction |
 | `POST /calls/{id}/transcribe` | Enqueue call for transcription |
 | `POST /admin/systems/merge` | Merge duplicate systems |
+| `GET /admin/maintenance` | View maintenance schedule and last run results |
+| `POST /admin/maintenance` | Trigger immediate maintenance run |
 | `POST /call-upload` | Upload call recording (rdio-scanner/OpenMHz compatible) |
 | `POST /query` | Ad-hoc read-only SQL queries |
 

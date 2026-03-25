@@ -15,7 +15,7 @@ import (
 )
 
 // IMBEClient calls an OpenAI-compatible /v1/audio/transcriptions endpoint
-// with IMBE .tap files instead of standard audio. Implements the Provider interface.
+// with IMBE .dvcf files instead of standard audio. Implements the Provider interface.
 type IMBEClient struct {
 	url     string
 	model   string
@@ -45,16 +45,16 @@ func (c *IMBEClient) Name() string { return "imbe" }
 // Model returns the configured model identifier.
 func (c *IMBEClient) Model() string { return c.model }
 
-// Transcribe derives the .tap file path from the audio path, sends it to the
+// Transcribe derives the .dvcf file path from the audio path, sends it to the
 // IMBE ASR endpoint, and returns the transcription result.
 func (c *IMBEClient) Transcribe(ctx context.Context, audioPath string, opts TranscribeOpts) (*Response, error) {
-	// Derive .tap path: replace the audio file extension with .tap
+	// Derive .dvcf path: replace the audio file extension with .dvcf
 	ext := filepath.Ext(audioPath)
-	tapPath := strings.TrimSuffix(audioPath, ext) + ".tap"
+	dvcfPath := strings.TrimSuffix(audioPath, ext) + ".dvcf"
 
-	f, err := os.Open(tapPath)
+	f, err := os.Open(dvcfPath)
 	if err != nil {
-		return nil, fmt.Errorf("open tap file: %w (expected at %s)", err, tapPath)
+		return nil, fmt.Errorf("open dvcf file: %w (expected at %s)", err, dvcfPath)
 	}
 	defer f.Close()
 
@@ -62,12 +62,12 @@ func (c *IMBEClient) Transcribe(ctx context.Context, audioPath string, opts Tran
 	w := multipart.NewWriter(&buf)
 
 	// Tap file field
-	part, err := w.CreateFormFile("file", filepath.Base(tapPath))
+	part, err := w.CreateFormFile("file", filepath.Base(dvcfPath))
 	if err != nil {
 		return nil, fmt.Errorf("create form file: %w", err)
 	}
 	if _, err := io.Copy(part, f); err != nil {
-		return nil, fmt.Errorf("copy tap data: %w", err)
+		return nil, fmt.Errorf("copy dvcf data: %w", err)
 	}
 
 	// Model

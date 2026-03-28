@@ -290,6 +290,9 @@ func (wp *WorkerPool) MaxDuration() float64 { return wp.opts.MaxDuration }
 // Model returns the configured STT model name.
 func (wp *WorkerPool) Model() string { return wp.provider.Model() }
 
+// ProviderName returns the STT provider name (e.g. "whisper", "imbe").
+func (wp *WorkerPool) ProviderName() string { return wp.provider.Name() }
+
 // Workers returns the number of worker goroutines.
 func (wp *WorkerPool) Workers() int { return wp.opts.Workers }
 

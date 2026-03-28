@@ -315,6 +315,10 @@ sample.env                      Configuration template
 - Tag source tracking (`alpha_tag_source`) — manual edits preserved across MQTT/CSV re-imports
 - Affiliation map eviction for stale entries
 
+## Roadmap
+
+See the [Trunk Reporter Roadmap](https://github.com/orgs/trunk-reporter/projects/1) for the cross-repo project tracker with priorities and phases.
+
 ## License
 
 MIT

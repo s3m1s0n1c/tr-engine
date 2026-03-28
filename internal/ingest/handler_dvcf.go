@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/snarg/tr-engine/internal/transcribe"
 )
 
 func (p *Pipeline) handleDvcf(payload []byte) error {
@@ -53,6 +55,49 @@ func (p *Pipeline) handleDvcf(payload []byte) error {
 		Int("tgid", meta.Talkgroup).
 		Str("sys_name", meta.ShortName).
 		Msg("dvcf file saved")
+
+	// Enqueue transcription if IMBE provider is active
+	if !p.isIMBEProvider() {
+		return nil
+	}
+
+	// Find the matching call by system_name + tgid + start_time
+	call, err := p.db.FindCallBySystemName(ctx, meta.ShortName, meta.Talkgroup, startTime)
+	if err != nil {
+		p.log.Warn().
+			Err(err).
+			Str("sys_name", meta.ShortName).
+			Int("tgid", meta.Talkgroup).
+			Int64("start_time", meta.StartTime).
+			Msg("dvcf: no matching call found, transcription will rely on backfill")
+		return nil
+	}
+
+	// Check duration and talkgroup filters
+	if call.Duration < float32(p.transcriber.MinDuration()) || call.Duration > float32(p.transcriber.MaxDuration()) {
+		return nil
+	}
+	if !p.shouldTranscribeTG(call.SystemID, call.Tgid) {
+		return nil
+	}
+
+	job := transcribe.Job{
+		CallID:        call.CallID,
+		CallStartTime: call.StartTime,
+		SystemID:      call.SystemID,
+		Tgid:          call.Tgid,
+		Duration:      call.Duration,
+		AudioFilePath: call.AudioFilePath,
+		CallFilename:  call.CallFilename,
+		SrcList:       call.SrcList,
+		TgAlphaTag:    call.TgAlphaTag,
+		TgDescription: call.TgDescription,
+		TgTag:         call.TgTag,
+		TgGroup:       call.TgGroup,
+	}
+	if !p.transcriber.Enqueue(job) {
+		p.log.Warn().Int64("call_id", call.CallID).Msg("dvcf: transcription queue full, skipping")
+	}
 
 	return nil
 }

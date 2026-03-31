@@ -4,20 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/snarg/tr-engine/internal/database"
 )
-
-// parseUnitEventTopic extracts the event type from the trailing topic segment.
-func parseUnitEventTopic(topic string) (string, error) {
-	parts := strings.Split(topic, "/")
-	if len(parts) < 2 {
-		return "", fmt.Errorf("invalid unit event topic: %s", topic)
-	}
-	return parts[len(parts)-1], nil
-}
 
 // parseUnitEventData parses the envelope and event-type-named data from a unit event payload.
 func parseUnitEventData(payload []byte, eventType string) (Envelope, UnitEventData, error) {
@@ -44,12 +34,7 @@ func parseUnitEventData(payload []byte, eventType string) (Envelope, UnitEventDa
 	return env, data, nil
 }
 
-func (p *Pipeline) handleUnitEvent(topic string, payload []byte) error {
-	eventType, err := parseUnitEventTopic(topic)
-	if err != nil {
-		return err
-	}
-
+func (p *Pipeline) handleUnitEvent(eventType string, payload []byte) error {
 	env, data, err := parseUnitEventData(payload, eventType)
 	if err != nil {
 		return err

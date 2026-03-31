@@ -1138,7 +1138,7 @@ func (p *Pipeline) dispatch(route *Route, topic string, payload []byte, env *Env
 	case "console":
 		err = p.handleConsoleLog(payload)
 	case "unit_event":
-		err = p.handleUnitEvent(topic, payload)
+		err = p.handleUnitEvent(route.EventType, payload)
 	default:
 		p.log.Warn().Str("handler", route.Handler).Msg("no handler for route")
 		return

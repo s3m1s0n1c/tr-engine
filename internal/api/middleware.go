@@ -314,6 +314,63 @@ func UploadAuth(token string) func(http.Handler) http.Handler {
 	}
 }
 
+// UploadAuthWithKeys extends UploadAuth to also accept API keys (tre_ prefix)
+// from form fields. This allows upload plugins to authenticate via API keys
+// when WRITE_TOKEN is deprecated.
+//
+// Resolution order:
+//  1. Authorization header (JWT or legacy token via extractBearerToken)
+//  2. Form field "key"/"api_key" — if starts with "tre_", resolve as API key
+//  3. Form field "key"/"api_key" — constant-time compare against legacy token
+//  4. Reject with 401
+func UploadAuthWithKeys(token string, keyDB apiKeyResolver) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// No auth configured at all — open mode
+			if token == "" && keyDB == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// 1. Check Authorization header / ?token= query param
+			if provided := extractBearerToken(r); provided != "" {
+				if token != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(token)) == 1 {
+					next.ServeHTTP(w, r)
+					return
+				}
+				if keyDB != nil && strings.HasPrefix(provided, "tre_") {
+					if key, err := keyDB.ResolveAPIKey(r.Context(), provided); err == nil && key != nil {
+						next.ServeHTTP(w, r)
+						return
+					}
+				}
+			}
+
+			// 2. Check form fields
+			if err := r.ParseMultipartForm(32 << 20); err == nil {
+				for _, fieldName := range []string{"key", "api_key"} {
+					val := r.FormValue(fieldName)
+					if val == "" {
+						continue
+					}
+					if keyDB != nil && strings.HasPrefix(val, "tre_") {
+						if key, err := keyDB.ResolveAPIKey(r.Context(), val); err == nil && key != nil {
+							next.ServeHTTP(w, r)
+							return
+						}
+					}
+					if token != "" && subtle.ConstantTimeCompare([]byte(val), []byte(token)) == 1 {
+						next.ServeHTTP(w, r)
+						return
+					}
+				}
+			}
+
+			WriteError(w, http.StatusUnauthorized, "unauthorized")
+		})
+	}
+}
+
 // BearerAuth requires a valid bearer token matching any of the provided tokens.
 // Empty tokens in the list are skipped. If all tokens are empty, all requests pass through.
 func BearerAuth(tokens ...string) func(http.Handler) http.Handler {

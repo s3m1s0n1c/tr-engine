@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -677,6 +678,85 @@ func TestWriteAuth(t *testing.T) {
 			t.Errorf("expected 403 when write token not set, got %d", rec.Code)
 		}
 	})
+}
+
+// ── UploadAuthWithKeys ────────────────────────────────────────────────────
+
+type mockAPIKeyResolver struct {
+	key *database.APIKey
+}
+
+func (m *mockAPIKeyResolver) ResolveAPIKey(_ context.Context, _ string) (*database.APIKey, error) {
+	if m.key != nil {
+		return m.key, nil
+	}
+	return nil, fmt.Errorf("not found")
+}
+
+func (m *mockAPIKeyResolver) TouchAPIKey(_ context.Context, _ int) error {
+	return nil
+}
+
+func TestUploadAuth_APIKey_FormField(t *testing.T) {
+	resolver := &mockAPIKeyResolver{
+		key: &database.APIKey{
+			ID:    1,
+			Label: "upload-key",
+			Role:  "editor",
+		},
+	}
+	mw := UploadAuthWithKeys("", resolver)
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	writer.WriteField("key", "tre_test_api_key_12345")
+	writer.WriteField("call", `{"talkgroup":1234}`)
+	writer.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/call-upload", &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	mw(okHandler).ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Errorf("expected 200 with API key in form field, got %d", rec.Code)
+	}
+}
+
+func TestUploadAuth_LegacyToken_StillWorks(t *testing.T) {
+	mw := UploadAuthWithKeys("upload-secret", nil)
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	writer.WriteField("key", "upload-secret")
+	writer.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/call-upload", &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	mw(okHandler).ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Errorf("expected 200 with legacy token in form field, got %d", rec.Code)
+	}
+}
+
+func TestUploadAuth_NoAuth_Rejects(t *testing.T) {
+	mw := UploadAuthWithKeys("upload-secret", nil)
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	writer.WriteField("call", `{"talkgroup":1234}`)
+	writer.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/call-upload", &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	mw(okHandler).ServeHTTP(rec, req)
+
+	if rec.Code != 401 {
+		t.Errorf("expected 401 with no auth, got %d", rec.Code)
+	}
 }
 
 func TestRecoverer(t *testing.T) {

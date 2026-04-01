@@ -152,10 +152,13 @@ func NewServer(opts ServerOptions) *Server {
 	// (UploadAuth with empty token rejects all requests).
 	if opts.Uploader != nil {
 		uploadToken := opts.Config.WriteToken
+		if uploadToken == "" {
+			uploadToken = opts.Config.AuthToken // fall back to shared token in token mode
+		}
 		uploadHandler := NewUploadHandler(opts.Uploader, opts.Config.UploadInstanceID, opts.Log)
 		r.Group(func(r chi.Router) {
 			r.Use(MaxBodySize(50 << 20)) // 50 MB for audio uploads
-			r.Use(UploadAuth(uploadToken))
+			r.Use(UploadAuthWithKeys(uploadToken, opts.DB))
 			r.Post("/api/v1/call-upload", uploadHandler.Upload)
 		})
 	}

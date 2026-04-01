@@ -245,19 +245,11 @@ func Load(overrides Overrides) (*Config, error) {
 		}
 	}
 
-	// When auth is explicitly disabled, clear any tokens so middleware passes everything through.
+	// Deprecated: AUTH_ENABLED=false — preserve clearing behavior during transition.
+	// New deployments should simply omit AUTH_TOKEN and ADMIN_PASSWORD for open mode.
 	if !cfg.AuthEnabled {
 		cfg.AuthToken = ""
 		cfg.WriteToken = ""
-	} else if cfg.AuthToken == "" {
-		// Auto-generate AUTH_TOKEN if not configured. This ensures the API is always
-		// protected from automated scanners. Web pages get the token injected via auth.js.
-		// The token changes on each restart; set AUTH_TOKEN in .env for a persistent one.
-		b := make([]byte, 32)
-		if _, err := rand.Read(b); err == nil {
-			cfg.AuthToken = base64.URLEncoding.EncodeToString(b)
-			cfg.AuthTokenGenerated = true
-		}
 	}
 
 	return cfg, nil

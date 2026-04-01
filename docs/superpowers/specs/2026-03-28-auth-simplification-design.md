@@ -15,6 +15,7 @@ The current auth system has 5 overlapping mechanisms (AUTH_TOKEN, WRITE_TOKEN, J
 3. Remove `WRITE_TOKEN` (replaced by JWT roles)
 4. Remove auto-generated `AUTH_TOKEN` (explicit config only)
 5. Maintain backward compatibility with a deprecation path
+6. Log loud startup warning when running in open mode (no auth)
 
 ## Auth Modes
 
@@ -60,17 +61,20 @@ The `user` field is removed from auth-init. Authenticated user info comes from `
 Rewrite to return new response shape:
 
 ```go
+// IMPORTANT: auth-init must always be registered (currently gated on AuthToken != "").
+// Move outside the AuthToken != "" conditional so all modes are discoverable.
 r.Get("/api/v1/auth-init", func(w http.ResponseWriter, r *http.Request) {
     resp := map[string]any{
-        "jwt_enabled": opts.Config.JWTSecret != "",
+        "jwt_enabled": opts.Config.AdminPassword != "",
     }
     switch {
     case opts.Config.AuthToken == "" && opts.Config.AdminPassword == "":
         resp["mode"] = "open"
-    case opts.Config.AuthToken != "" && opts.Config.JWTSecret == "":
+    case opts.Config.AuthToken != "" && opts.Config.AdminPassword == "":
         resp["mode"] = "token"
         // Do NOT include read_token — user must enter it themselves
     default:
+        // AdminPassword is set — full mode (JWT login available)
         resp["mode"] = "full"
         if opts.Config.AuthToken != "" {
             resp["read_token"] = opts.Config.AuthToken
@@ -83,11 +87,13 @@ r.Get("/api/v1/auth-init", func(w http.ResponseWriter, r *http.Request) {
 })
 ```
 
-Note: auth-init is always registered (currently gated on `AuthToken != ""`). In `open` mode it returns `{"mode": "open", "jwt_enabled": false}` so the dashboard knows no auth is needed.
+**Required change:** auth-init must be unconditionally registered (remove the `if opts.Config.AuthToken != ""` gate). The dashboard depends on it to detect all three modes including `open`.
 
 ### Remove auto-generated AUTH_TOKEN
 
 Currently in `config.go`, if `AUTH_TOKEN` is empty and `AUTH_ENABLED` is not explicitly false, a random token is generated and logged. Remove this behavior. If `AUTH_TOKEN` is not set, there is no token auth.
+
+**Open mode startup warning:** When neither `AUTH_TOKEN` nor `ADMIN_PASSWORD` is set, log a prominent warning at startup: `"WARNING: running in open mode — API is completely unprotected. Set AUTH_TOKEN or ADMIN_PASSWORD to enable authentication."` This prevents users from accidentally running unprotected.
 
 ### Deprecate WRITE_TOKEN
 
@@ -98,6 +104,7 @@ Currently in `config.go`, if `AUTH_TOKEN` is empty and `AUTH_ENABLED` is not exp
 
 - `AUTH_ENABLED` was an implicit flag (true when either token is set). Remove it as a concept. Auth mode is derived from `AUTH_TOKEN` and `ADMIN_PASSWORD` presence.
 - If `AUTH_ENABLED=false` is explicitly set in env, log a warning: `"AUTH_ENABLED is deprecated — remove AUTH_TOKEN and ADMIN_PASSWORD to disable auth."`
+- **During deprecation:** preserve the existing clearing behavior (`AUTH_ENABLED=false` → clear `AuthToken` and `WriteToken`). This ensures old `.env` files with `AUTH_ENABLED=false` continue to result in open mode rather than accidentally enabling auth from leftover token values.
 
 ### JWTOrTokenAuth middleware
 
@@ -109,7 +116,29 @@ No changes needed. It already handles:
 
 ### WriteAuth middleware
 
-Currently checks `WRITE_TOKEN`. Change to: if `WRITE_TOKEN` is set (deprecated path), use it. Otherwise, require JWT with editor+ role for write operations. This is already partially implemented — `WriteAuth` falls through to role checks when no write token matches.
+**This needs changes** (the current pass-through logic is unsafe in new modes).
+
+Currently, `WriteAuth` short-circuits with `next.ServeHTTP()` when both `writeToken` and `authToken` are empty. In `full` mode without `AUTH_TOKEN`, this means writes pass through with no check — a security hole.
+
+Fix: `WriteAuth` should also consider whether JWT auth is configured. New logic:
+1. If `WRITE_TOKEN` is set (deprecated path) and token matches → allow (admin role)
+2. If `AUTH_TOKEN` is set and token matches → reject writes (read-only token)
+3. If JWT auth is configured → require editor+ role from JWT claims (already in context from `JWTOrTokenAuth`)
+4. If no auth is configured at all → pass through (open mode)
+
+The key change: instead of checking `writeToken == "" && authToken == ""` to detect "no auth," pass a `jwtEnabled bool` parameter so WriteAuth knows JWT is in play even when both legacy tokens are empty.
+
+### UploadAuth middleware
+
+**Gap:** Upload plugins (rdio-scanner, OpenMHz) send auth via `key`/`api_key` form fields, not JWT. With `WRITE_TOKEN` deprecated, uploads need an alternative auth path.
+
+Fix: Extend `UploadAuth` to also accept API keys (`tre_` prefix) from form fields. Flow:
+1. Check `Authorization` header (JWT or legacy token) — existing behavior
+2. Check `key`/`api_key` form fields — if value starts with `tre_`, resolve via DB
+3. Check `key`/`api_key` form fields — constant-time compare against `AUTH_TOKEN` (for simple deployments in `token` mode where the shared token grants full access)
+4. If `WRITE_TOKEN` is set (deprecated) — existing constant-time compare
+
+This lets upload plugins use API keys created via the management endpoints, which is the intended long-term path.
 
 ## Dashboard Changes (tr-dashboard)
 
@@ -194,14 +223,18 @@ if (accessToken) {
 // No more writeToken logic
 ```
 
-### SSE connection
+### SSE connection (`eventsource.ts`)
 
-Same priority — pass JWT or apiToken via `?token=` param:
+`SSEManager.buildUrl()` currently only injects `accessToken`. Update to use the same priority:
 
 ```typescript
+const { accessToken } = useAuthStore.getState()
+const { apiToken } = useAuthStore.getState()
 const token = accessToken || apiToken
 if (token) params.set('token', token)
 ```
+
+Also update the token-change subscription to watch `apiToken` in addition to `accessToken`.
 
 ### Token prompt UI
 
@@ -217,11 +250,11 @@ The existing `auth.js` that patches `window.fetch` can be simplified to match th
 
 1. Fetch `auth-init`
 2. If `mode: "open"` — do nothing
-3. If `mode: "token"` — prompt for token (existing localStorage prompt behavior)
-4. If `mode: "full"` with `read_token` — use it
-5. If `mode: "full"` without `read_token` — prompt for token
+3. If `mode: "token"` — use lazy-prompt-on-401 pattern (current behavior: synchronous XHR blocks page load, so prompt cannot happen during init; instead, set `mode = 'none'` and let 401 interception trigger the localStorage prompt)
+4. If `mode: "full"` with `read_token` — inject it into all requests
+5. If `mode: "full"` without `read_token` — lazy-prompt-on-401 (same as token mode)
 
-This replaces the current behavior where auth.js always gets the token from auth-init and injects it.
+**Backward compat:** If auth-init response has no `mode` field (old engine), fall back to current behavior (use `token` field if present, probe login endpoint).
 
 ## Config Summary (After)
 
@@ -241,17 +274,23 @@ This replaces the current behavior where auth.js always gets the token from auth
 2. **`AUTH_TOKEN` + `ADMIN_PASSWORD`:** No change in behavior. Public read works via auth-init read_token. JWT login for writes.
 3. **`WRITE_TOKEN` users:** Log deprecation warning. Works during transition. Guide users to set `ADMIN_PASSWORD` and create user accounts instead.
 4. **`AUTH_ENABLED=false`:** Log deprecation warning. Remove both token vars to disable auth.
-5. **Caddy injection users:** Remove the `@no_auth` / `request_header` injection block from Caddyfile. Dashboard handles it now.
+5. **Caddy injection users:** The `@no_auth` / `request_header` injection block in Caddyfile is now unnecessary but **harmless to leave in place** during migration. The new dashboard ignores injected tokens (it fetches its own from auth-init). Removing the Caddy injection block is optional cleanup, not a required step.
 
 ### Version compatibility
 
 Dashboard v-next detects the new auth-init shape by checking for the `mode` field. If `mode` is absent (old engine), falls back to legacy behavior (check `guest_access`, probe login endpoint).
+
+## Security Notes
+
+- **read_token in auth-init is intentionally public:** In `full` mode with `AUTH_TOKEN` set, auth-init returns the read token to unauthenticated callers. This is by design — `AUTH_TOKEN` in this configuration is a "public read key," not a secret. Anyone who can reach the API gets read access. This matches the current behavior.
+- **Token mode keeps the token secret:** In `token` mode, auth-init does NOT return the token. The user must know it out-of-band.
+- **API keys in open mode are inert:** When no auth is configured, `JWTOrTokenAuth` short-circuits before reaching the API key check. API keys still validate but aren't required. This is correct — open mode means no auth needed.
 
 ## What This Does NOT Change
 
 - API key auth (`tre_` prefix) — unchanged
 - JWT token format and claims — unchanged
 - Auth endpoint paths (`/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/me`, `/auth/setup`) — unchanged
-- `JWTOrTokenAuth` middleware internals — unchanged (still handles all auth types)
+- `JWTOrTokenAuth` middleware — unchanged (still handles JWT, API keys, legacy tokens, and no-auth pass-through)
 - CORS configuration — unchanged
 - Rate limiting on auth endpoints — unchanged

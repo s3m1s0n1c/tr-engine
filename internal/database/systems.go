@@ -129,6 +129,9 @@ func (db *DB) MergeSystems(ctx context.Context, sourceID, targetID int, performe
 		cgConflicts = append(cgConflicts, struct{ src, dst int }{src, dst})
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, 0, 0, 0, 0, fmt.Errorf("iterate call group conflicts: %w", err)
+	}
 
 	for _, c := range cgConflicts {
 		if _, err := tx.Exec(ctx, `UPDATE calls SET call_group_id = $1 WHERE call_group_id = $2`, c.dst, c.src); err != nil {
@@ -161,6 +164,9 @@ func (db *DB) MergeSystems(ctx context.Context, sourceID, targetID int, performe
 		tgs = append(tgs, r)
 	}
 	tgRows.Close()
+	if err := tgRows.Err(); err != nil {
+		return 0, 0, 0, 0, 0, 0, fmt.Errorf("iterate source talkgroups: %w", err)
+	}
 
 	for _, r := range tgs {
 		result, err := tx.Exec(ctx, `
@@ -203,6 +209,9 @@ func (db *DB) MergeSystems(ctx context.Context, sourceID, targetID int, performe
 		units = append(units, r)
 	}
 	uRows.Close()
+	if err := uRows.Err(); err != nil {
+		return 0, 0, 0, 0, 0, 0, fmt.Errorf("iterate source units: %w", err)
+	}
 
 	for _, r := range units {
 		result, err := tx.Exec(ctx, `
@@ -247,8 +256,12 @@ func (db *DB) MergeSystems(ctx context.Context, sourceID, targetID int, performe
 
 	// Combine system names
 	var targetName, sourceName string
-	_ = tx.QueryRow(ctx, `SELECT COALESCE(name,'') FROM systems WHERE system_id = $1`, targetID).Scan(&targetName)
-	_ = tx.QueryRow(ctx, `SELECT COALESCE(name,'') FROM systems WHERE system_id = $1`, sourceID).Scan(&sourceName)
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(name,'') FROM systems WHERE system_id = $1`, targetID).Scan(&targetName); err != nil {
+		return 0, 0, 0, 0, 0, 0, fmt.Errorf("read target system name: %w", err)
+	}
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(name,'') FROM systems WHERE system_id = $1`, sourceID).Scan(&sourceName); err != nil {
+		return 0, 0, 0, 0, 0, 0, fmt.Errorf("read source system name: %w", err)
+	}
 	if sourceName != "" && !strings.Contains(targetName, sourceName) {
 		combined := targetName + "/" + sourceName
 		if _, err := tx.Exec(ctx, `UPDATE systems SET name = $1 WHERE system_id = $2`, combined, targetID); err != nil {

@@ -477,6 +477,50 @@ func (db *DB) FindCallFuzzy(ctx context.Context, systemID, tgid int, startTime t
 	return db.FindCallForAudio(ctx, systemID, tgid, startTime)
 }
 
+// DvcfCallMatch holds the call fields needed to enqueue IMBE transcription
+// from a standalone DVCF message (which lacks instance_id for identity resolution).
+type DvcfCallMatch struct {
+	CallID        int64
+	StartTime     time.Time
+	SystemID      int
+	Tgid          int
+	AudioFilePath string
+	CallFilename  string
+	Duration      float32
+	SrcList       json.RawMessage
+	TgAlphaTag    string
+	TgDescription string
+	TgTag         string
+	TgGroup       string
+}
+
+// FindCallBySystemName finds a call by system_name + tgid + start_time (±5s).
+// Used by the DVCF handler which has short_name but no instance_id.
+func (db *DB) FindCallBySystemName(ctx context.Context, systemName string, tgid int, startTime time.Time) (*DvcfCallMatch, error) {
+	row, err := db.Q.FindCallBySystemName(ctx, sqlcdb.FindCallBySystemNameParams{
+		SystemName: systemName,
+		Tgid:       tgid,
+		Column3:    pgtz(startTime),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &DvcfCallMatch{
+		CallID:        row.CallID,
+		StartTime:     row.StartTime.Time,
+		SystemID:      row.SystemID,
+		Tgid:          row.Tgid,
+		AudioFilePath: row.AudioFilePath,
+		CallFilename:  row.CallFilename,
+		Duration:      row.Duration,
+		SrcList:       row.SrcList,
+		TgAlphaTag:    row.TgAlphaTag,
+		TgDescription: row.TgDescription,
+		TgTag:         row.TgTag,
+		TgGroup:       row.TgGroup,
+	}, nil
+}
+
 // GetCallAudioPath returns the audio file path and call_filename for a call.
 // audio_file_path is the tr-engine managed path; call_filename is TR's original absolute path.
 func (db *DB) GetCallAudioPath(ctx context.Context, callID int64) (audioPath string, callFilename string, err error) {

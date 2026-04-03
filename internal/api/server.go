@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
@@ -105,35 +104,28 @@ func NewServer(opts ServerOptions) *Server {
 		r.Post("/api/v1/debug-report", debugReport.Submit)
 	}
 
-	// Web auth bootstrap — returns the read token for web UI pages.
-	// If a valid JWT is present in the request, also returns user info.
-	if opts.Config.AuthToken != "" {
-		jwtSecret := []byte(opts.Config.JWTSecret)
-		r.Get("/api/v1/auth-init", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Cache-Control", "no-store")
-
-			resp := map[string]any{
-				"token": opts.Config.AuthToken,
+	// Auth mode discovery — always registered so clients can detect auth requirements.
+	// Returns {mode, read_token?, jwt_enabled} — no secrets exposed in token mode.
+	r.Get("/api/v1/auth-init", func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"jwt_enabled": opts.Config.AdminPassword != "",
+		}
+		switch {
+		case opts.Config.AuthToken == "" && opts.Config.AdminPassword == "":
+			resp["mode"] = "open"
+		case opts.Config.AuthToken != "" && opts.Config.AdminPassword == "":
+			resp["mode"] = "token"
+		default:
+			resp["mode"] = "full"
+			if opts.Config.AuthToken != "" {
+				resp["read_token"] = opts.Config.AuthToken
 			}
-
-			// If there's a valid JWT, include user info (backward compatible —
-			// "user" field is absent, not null, when no JWT present)
-			if provided := extractBearerToken(r); provided != "" && len(jwtSecret) > 0 && strings.Count(provided, ".") == 2 {
-				claims := &Claims{}
-				token, err := jwt.ParseWithClaims(provided, claims, jwtKeyFunc(jwtSecret))
-				if err == nil && token.Valid {
-					resp["user"] = map[string]any{
-						"username": claims.Username,
-						"role":     claims.Role,
-					}
-				}
-			}
-
-			b, _ := json.Marshal(resp)
-			w.Write(b)
-		})
-	}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		b, _ := json.Marshal(resp)
+		w.Write(b)
+	})
 
 	// User auth endpoints — single AuthHandler instance shared across
 	// unauthenticated routes (login/refresh/logout) and authenticated (/auth/me)
@@ -160,10 +152,13 @@ func NewServer(opts ServerOptions) *Server {
 	// (UploadAuth with empty token rejects all requests).
 	if opts.Uploader != nil {
 		uploadToken := opts.Config.WriteToken
+		if uploadToken == "" {
+			uploadToken = opts.Config.AuthToken // fall back to shared token in token mode
+		}
 		uploadHandler := NewUploadHandler(opts.Uploader, opts.Config.UploadInstanceID, opts.Log)
 		r.Group(func(r chi.Router) {
 			r.Use(MaxBodySize(50 << 20)) // 50 MB for audio uploads
-			r.Use(UploadAuth(uploadToken))
+			r.Use(UploadAuthWithKeys(uploadToken, opts.DB))
 			r.Post("/api/v1/call-upload", uploadHandler.Upload)
 		})
 	}
@@ -191,7 +186,7 @@ func NewServer(opts ServerOptions) *Server {
 			// Use JWTOrTokenAuth which handles JWT, API keys, and legacy token auth.
 			r.Use(JWTOrTokenAuth([]byte(opts.Config.JWTSecret), opts.Config.WriteToken, opts.Config.AuthToken, opts.DB))
 
-			r.Use(WriteAuth(opts.Config.WriteToken, opts.Config.AuthToken))
+			r.Use(WriteAuth(opts.Config.WriteToken, opts.Config.AuthToken, opts.Config.JWTSecret != ""))
 		}
 		r.Use(ResponseTimeout(opts.Config.WriteTimeout))
 

@@ -166,6 +166,59 @@ func TestStreamConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestLoad_NoAutoGenerateAuthToken(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/test")
+	t.Setenv("MQTT_BROKER_URL", "tcp://localhost:1883")
+	t.Setenv("AUTH_TOKEN", "")
+
+	cfg, err := Load(Overrides{EnvFile: "nonexistent.env"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthToken != "" {
+		t.Errorf("expected empty AuthToken, got %q", cfg.AuthToken)
+	}
+	if cfg.AuthTokenGenerated {
+		t.Error("expected AuthTokenGenerated=false")
+	}
+}
+
+func TestLoad_AuthEnabledFalse_ClearsTokens(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/test")
+	t.Setenv("MQTT_BROKER_URL", "tcp://localhost:1883")
+	t.Setenv("AUTH_ENABLED", "false")
+	t.Setenv("AUTH_TOKEN", "should-be-cleared")
+	t.Setenv("WRITE_TOKEN", "should-be-cleared")
+
+	cfg, err := Load(Overrides{EnvFile: "nonexistent.env"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthToken != "" {
+		t.Errorf("expected empty AuthToken after AUTH_ENABLED=false, got %q", cfg.AuthToken)
+	}
+	if cfg.WriteToken != "" {
+		t.Errorf("expected empty WriteToken after AUTH_ENABLED=false, got %q", cfg.WriteToken)
+	}
+}
+
+func TestLoad_ExplicitAuthToken_Preserved(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/test")
+	t.Setenv("MQTT_BROKER_URL", "tcp://localhost:1883")
+	t.Setenv("AUTH_TOKEN", "my-explicit-token")
+
+	cfg, err := Load(Overrides{EnvFile: "nonexistent.env"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthToken != "my-explicit-token" {
+		t.Errorf("expected AuthToken %q, got %q", "my-explicit-token", cfg.AuthToken)
+	}
+	if cfg.AuthTokenGenerated {
+		t.Error("expected AuthTokenGenerated=false for explicit token")
+	}
+}
+
 // setEnvs sets environment variables and returns a cleanup function.
 func setEnvs(t *testing.T, envs map[string]string) func() {
 	t.Helper()

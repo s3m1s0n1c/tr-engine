@@ -132,6 +132,7 @@ type SrcItem struct {
 type AudioCallData struct {
 	AudioWavBase64 string        `json:"audio_wav_base64"`
 	AudioM4ABase64 string        `json:"audio_m4a_base64"`
+	AudioDvcfBase64 string        `json:"audio_dvcf_base64"`
 	Metadata       AudioMetadata `json:"metadata"`
 }
 
@@ -281,6 +282,38 @@ type TrunkingMessageData struct {
 type TrunkingMessageMsg struct {
 	Envelope
 	Message TrunkingMessageData `json:"message"`
+}
+
+// DvcfMetadata is the metadata sub-object inside a DVCF MQTT message.
+// Uses json.RawMessage for SrcList to avoid type mismatches (TR sends
+// emergency as bool, but the main SrcItem struct uses int).
+type DvcfMetadata struct {
+	Talkgroup         int             `json:"talkgroup"`
+	TalkgroupTag      string          `json:"talkgroup_tag"`
+	TalkgroupAlphaTag string          `json:"talkgroup_alpha_tag"`
+	TalkgroupGroup    string          `json:"talkgroup_group"`
+	Freq              float64         `json:"freq"`
+	StartTime         int64           `json:"start_time"`
+	StopTime          int64           `json:"stop_time"`
+	CallLength        int             `json:"call_length"`
+	Signal            float64         `json:"signal"`
+	Noise             float64         `json:"noise"`
+	FreqError         int             `json:"freq_error"`
+	SpikeCount        int             `json:"spike_count"`
+	Emergency         json.RawMessage `json:"emergency"`
+	Priority          int             `json:"priority"`
+	Phase2TDMA        bool            `json:"phase2_tdma"`
+	TDMASlot          int             `json:"tdma_slot"`
+	ShortName         string          `json:"short_name"`
+	Filename          string          `json:"filename"`
+	SrcList           json.RawMessage `json:"srcList"`
+	PatchedTalkgroups []int           `json:"patched_talkgroups,omitempty"`
+}
+
+// DvcfMsg wraps a DVCF message from the mqtt_dvcf plugin.
+type DvcfMsg struct {
+	AudioDvcfBase64 string       `json:"audio_dvcf_base64"`
+	Metadata        DvcfMetadata `json:"metadata"`
 }
 
 // ConsoleLogData is the inner data for a trunk-recorder console log message.

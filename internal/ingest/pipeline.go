@@ -471,6 +471,11 @@ func (p *Pipeline) enqueueTranscription(callID int64, startTime time.Time, syste
 	if p.transcriber == nil {
 		return
 	}
+	// IMBE provider requires a .dvcf file that arrives on a separate MQTT topic.
+	// Transcription for IMBE is enqueued by handleDvcf, not by other handlers.
+	if p.isIMBEProvider() {
+		return
+	}
 	// Skip if neither an audio file path nor a call filename is available —
 	// the transcription worker would fail to resolve the audio.
 	if audioFilePath == "" && meta.Filename == "" {
@@ -523,6 +528,14 @@ func (p *Pipeline) shouldTranscribeTG(systemID, tgid int) bool {
 		return p.transcribeIncludeTGs[plain] || p.transcribeIncludeTGs[scoped]
 	}
 	return !p.transcribeExcludeTGs[plain] && !p.transcribeExcludeTGs[scoped]
+}
+
+// isIMBEProvider returns true if the transcription provider is the IMBE ASR provider.
+func (p *Pipeline) isIMBEProvider() bool {
+	if p.transcriber == nil {
+		return false
+	}
+	return p.transcriber.ProviderName() == "imbe"
 }
 
 // resolveNamedTGFilters expands name-based entries like "butco:1001" into
@@ -1110,6 +1123,8 @@ func (p *Pipeline) dispatch(route *Route, topic string, payload []byte, env *Env
 		err = p.handleCallsActive(payload)
 	case "audio":
 		err = p.handleAudio(payload)
+	case "dvcf":
+		err = p.handleDvcf(payload)
 	case "recorders":
 		err = p.handleRecorders(payload)
 	case "recorder":
@@ -1123,7 +1138,7 @@ func (p *Pipeline) dispatch(route *Route, topic string, payload []byte, env *Env
 	case "console":
 		err = p.handleConsoleLog(payload)
 	case "unit_event":
-		err = p.handleUnitEvent(topic, payload)
+		err = p.handleUnitEvent(route.EventType, payload)
 	default:
 		p.log.Warn().Str("handler", route.Handler).Msg("no handler for route")
 		return
@@ -1215,6 +1230,8 @@ func (p *Pipeline) archiveRaw(handler, topic string, payload []byte, instanceID 
 	rawPayload := payload
 	if handler == "audio" {
 		rawPayload = stripAudioBase64(payload)
+	} else if handler == "dvcf" {
+		rawPayload = stripDvcfBase64(payload)
 	}
 	p.rawBatcher.Add(database.RawMessageRow{
 		Topic:      topic,
@@ -1337,6 +1354,21 @@ func stripAudioBase64(payload []byte) []byte {
 		return payload
 	}
 	obj["call"] = callBytes
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
+// stripDvcfBase64 removes the base64 DVCF data from dvcf message payloads
+// before storing in mqtt_raw_messages.
+func stripDvcfBase64(payload []byte) []byte {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &obj); err != nil {
+		return payload
+	}
+	delete(obj, "audio_dvcf_base64")
 	out, err := json.Marshal(obj)
 	if err != nil {
 		return payload

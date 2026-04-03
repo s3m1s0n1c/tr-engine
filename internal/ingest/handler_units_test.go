@@ -5,42 +5,6 @@ import (
 	"testing"
 )
 
-// ── parseUnitEventTopic ──────────────────────────────────────────────
-
-func TestParseUnitEventTopic(t *testing.T) {
-	tests := []struct {
-		name      string
-		topic     string
-		want      string
-		wantErr   bool
-	}{
-		{"join_event", "prefix/butco/join", "join", false},
-		{"off_event", "trengine/units/warco/off", "off", false},
-		{"call_event", "a/b/c/call", "call", false},
-		{"two_segments", "sys/join", "join", false},
-		{"single_segment", "join", "", true},
-		{"empty_topic", "", "", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseUnitEventTopic(tt.topic)
-			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error, got nil")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got != tt.want {
-				t.Errorf("parseUnitEventTopic(%q) = %q, want %q", tt.topic, got, tt.want)
-			}
-		})
-	}
-}
-
 // ── parseUnitEventData ───────────────────────────────────────────────
 
 func TestParseUnitEventData(t *testing.T) {
@@ -151,7 +115,7 @@ func TestParseUnitEventData(t *testing.T) {
 	})
 }
 
-// ── round-trip: topic + payload parsing ──────────────────────────────
+// ── round-trip: route parsing + payload parsing ─────────────────────
 
 func TestUnitEventParseRoundTrip(t *testing.T) {
 	topic := "trengine/units/butco/join"
@@ -166,15 +130,18 @@ func TestUnitEventParseRoundTrip(t *testing.T) {
 		},
 	})
 
-	eventType, err := parseUnitEventTopic(topic)
-	if err != nil {
-		t.Fatalf("parseUnitEventTopic: %v", err)
+	route := ParseTopic(topic)
+	if route == nil {
+		t.Fatal("ParseTopic returned nil")
 	}
-	if eventType != "join" {
-		t.Fatalf("eventType = %q, want %q", eventType, "join")
+	if route.Handler != "unit_event" {
+		t.Fatalf("Handler = %q, want %q", route.Handler, "unit_event")
+	}
+	if route.EventType != "join" {
+		t.Fatalf("EventType = %q, want %q", route.EventType, "join")
 	}
 
-	env, data, err := parseUnitEventData(payload, eventType)
+	env, data, err := parseUnitEventData(payload, route.EventType)
 	if err != nil {
 		t.Fatalf("parseUnitEventData: %v", err)
 	}

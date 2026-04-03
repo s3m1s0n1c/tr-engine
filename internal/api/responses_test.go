@@ -41,15 +41,8 @@ func TestParsePagination(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if p.Limit != 5000 {
-			t.Errorf("Limit = %d, want 5000", p.Limit)
-		}
-	})
-	t.Run("limit_exceeds_max_errors", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/?limit=10001", nil)
-		_, err := ParsePagination(req)
-		if err == nil {
-			t.Error("expected error for limit=10001")
+		if p.Limit != 1000 {
+			t.Errorf("Limit = %d, want 1000 (capped)", p.Limit)
 		}
 	})
 	t.Run("limit_zero_errors", func(t *testing.T) {

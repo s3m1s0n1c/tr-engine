@@ -64,6 +64,55 @@ func (q *Queries) FindCallForAudio(ctx context.Context, arg FindCallForAudioPara
 	return i, err
 }
 
+const findCallBySystemName = `-- name: FindCallBySystemName :one
+SELECT call_id, start_time, system_id, tgid,
+       COALESCE(audio_file_path, '') AS audio_file_path,
+       COALESCE(call_filename, '') AS call_filename,
+       COALESCE(duration, 0) AS duration,
+       COALESCE(src_list, 'null'::jsonb) AS src_list,
+       COALESCE(tg_alpha_tag, '') AS tg_alpha_tag,
+       COALESCE(tg_description, '') AS tg_description,
+       COALESCE(tg_tag, '') AS tg_tag,
+       COALESCE(tg_group, '') AS tg_group
+FROM calls
+WHERE system_name = $1 AND tgid = $2
+    AND start_time BETWEEN $3::timestamptz - interval '5 seconds' AND $3::timestamptz + interval '5 seconds'
+ORDER BY ABS(EXTRACT(EPOCH FROM (start_time - $3::timestamptz)))
+LIMIT 1
+`
+
+type FindCallBySystemNameParams struct {
+	SystemName string
+	Tgid       int
+	Column3    pgtype.Timestamptz
+}
+
+type FindCallBySystemNameRow struct {
+	CallID        int64
+	StartTime     pgtype.Timestamptz
+	SystemID      int
+	Tgid          int
+	AudioFilePath string
+	CallFilename  string
+	Duration      float32
+	SrcList       []byte
+	TgAlphaTag    string
+	TgDescription string
+	TgTag         string
+	TgGroup       string
+}
+
+func (q *Queries) FindCallBySystemName(ctx context.Context, arg FindCallBySystemNameParams) (FindCallBySystemNameRow, error) {
+	row := q.db.QueryRow(ctx, findCallBySystemName, arg.SystemName, arg.Tgid, arg.Column3)
+	var i FindCallBySystemNameRow
+	err := row.Scan(
+		&i.CallID, &i.StartTime, &i.SystemID, &i.Tgid,
+		&i.AudioFilePath, &i.CallFilename, &i.Duration, &i.SrcList,
+		&i.TgAlphaTag, &i.TgDescription, &i.TgTag, &i.TgGroup,
+	)
+	return i, err
+}
+
 const getCallAudioPath = `-- name: GetCallAudioPath :one
 SELECT COALESCE(audio_file_path, '') AS audio_file_path, COALESCE(call_filename, '') AS call_filename
 FROM calls WHERE call_id = $1

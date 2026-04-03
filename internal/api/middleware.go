@@ -314,6 +314,63 @@ func UploadAuth(token string) func(http.Handler) http.Handler {
 	}
 }
 
+// UploadAuthWithKeys extends UploadAuth to also accept API keys (tre_ prefix)
+// from form fields. This allows upload plugins to authenticate via API keys
+// when WRITE_TOKEN is deprecated.
+//
+// Resolution order:
+//  1. Authorization header (JWT or legacy token via extractBearerToken)
+//  2. Form field "key"/"api_key" — if starts with "tre_", resolve as API key
+//  3. Form field "key"/"api_key" — constant-time compare against legacy token
+//  4. Reject with 401
+func UploadAuthWithKeys(token string, keyDB apiKeyResolver) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// No auth configured at all — open mode
+			if token == "" && keyDB == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// 1. Check Authorization header / ?token= query param
+			if provided := extractBearerToken(r); provided != "" {
+				if token != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(token)) == 1 {
+					next.ServeHTTP(w, r)
+					return
+				}
+				if keyDB != nil && strings.HasPrefix(provided, "tre_") {
+					if key, err := keyDB.ResolveAPIKey(r.Context(), provided); err == nil && key != nil {
+						next.ServeHTTP(w, r)
+						return
+					}
+				}
+			}
+
+			// 2. Check form fields
+			if err := r.ParseMultipartForm(32 << 20); err == nil {
+				for _, fieldName := range []string{"key", "api_key"} {
+					val := r.FormValue(fieldName)
+					if val == "" {
+						continue
+					}
+					if keyDB != nil && strings.HasPrefix(val, "tre_") {
+						if key, err := keyDB.ResolveAPIKey(r.Context(), val); err == nil && key != nil {
+							next.ServeHTTP(w, r)
+							return
+						}
+					}
+					if token != "" && subtle.ConstantTimeCompare([]byte(val), []byte(token)) == 1 {
+						next.ServeHTTP(w, r)
+						return
+					}
+				}
+			}
+
+			WriteError(w, http.StatusUnauthorized, "unauthorized")
+		})
+	}
+}
+
 // BearerAuth requires a valid bearer token matching any of the provided tokens.
 // Empty tokens in the list are skipped. If all tokens are empty, all requests pass through.
 func BearerAuth(tokens ...string) func(http.Handler) http.Handler {
@@ -440,16 +497,19 @@ func EditorOrAbove(next http.Handler) http.Handler {
 }
 
 // WriteAuth requires the write token for mutating HTTP methods (POST, PATCH, PUT, DELETE).
-// Read methods (GET, HEAD, OPTIONS) pass through unconditionally.
-// When JWT auth is active, it checks the user's role from context first.
-//   - editor or admin role → pass
-//   - viewer role → 403
-//   - no role (legacy path) → fall back to WRITE_TOKEN check
-func WriteAuth(writeToken, authToken string) func(http.Handler) http.Handler {
+// WriteAuth gates mutating HTTP methods (POST, PATCH, PUT, DELETE).
+// Read methods (GET, HEAD, OPTIONS) always pass through.
+//
+// Logic for writes:
+//  1. If no auth at all (no tokens, no JWT) → pass through (open mode)
+//  2. If caller has a role from JWTOrTokenAuth → check editor+ role
+//  3. Legacy fallback: check WRITE_TOKEN (deprecated)
+func WriteAuth(writeToken, authToken string, jwtEnabled bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if writeToken == "" && authToken == "" {
-				next.ServeHTTP(w, r) // no auth at all
+			// No auth configured at all — open mode
+			if writeToken == "" && authToken == "" && !jwtEnabled {
+				next.ServeHTTP(w, r)
 				return
 			}
 
@@ -471,7 +531,14 @@ func WriteAuth(writeToken, authToken string) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Legacy fallback: no role in context
+			// No role in context — if JWT is enabled, this means caller is
+			// unauthenticated or used a read-only token. Reject.
+			if jwtEnabled {
+				WriteErrorWithCode(w, http.StatusForbidden, ErrForbidden, "write operations require login with editor or admin role")
+				return
+			}
+
+			// Legacy fallback: WRITE_TOKEN (deprecated path)
 			if writeToken == "" {
 				WriteErrorWithCode(w, http.StatusForbidden, ErrForbidden, "write operations require WRITE_TOKEN")
 				return

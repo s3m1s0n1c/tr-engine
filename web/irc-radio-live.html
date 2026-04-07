@@ -1986,14 +1986,26 @@ function resolveChannel(systemId, tgid) {
   return tgidToChannel.get(tgKey(systemId, tgid));
 }
 
+function nickQuality(nick) {
+  if (!nick) return 0;
+  if (/^unit-\d+$/i.test(nick)) return 1;
+  if (/^[A-Z0-9-]{1,6}$/.test(nick)) return 2; // likely compact radio alias
+  return 10 + Math.min(nick.length, 20); // prefer richer/descriptive tags
+}
+
 function resolveNick(systemId, unitId, alphaTag) {
   const key = unitKey(systemId, unitId);
+  const cachedNick = unitNickCache.get(key);
+
   if (alphaTag && alphaTag.trim()) {
-    const nick = toNick(alphaTag, unitId);
-    unitNickCache.set(key, nick);
-    return nick;
+    const incomingNick = toNick(alphaTag, unitId);
+    if (!cachedNick || nickQuality(incomingNick) > nickQuality(cachedNick)) {
+      unitNickCache.set(key, incomingNick);
+      return incomingNick;
+    }
+    return cachedNick;
   }
-  if (unitNickCache.has(key)) return unitNickCache.get(key);
+  if (cachedNick) return cachedNick;
   const fallback = toNick(null, unitId);
   unitNickCache.set(key, fallback);
   return fallback;
